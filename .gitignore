@@ -53,3 +53,9 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# build directory
+build/
+
+# Backup files (that I usually make)
+*.bak

@@ -1,0 +1,21 @@
+#
+# Valgrind suppressions for PAPI taint work
+#
+# 02 Feb 26  jpb  Creation.
+#
+# LLVM never frees its internal StringMap buckets on shutdown, so suppress the message.
+#
+{
+   llvm_stringmap_init
+   Memcheck:Leak
+   ...
+   obj:*/libLLVM.so*
+}
+# More areas when LLVM doesn't sequence the free properly
+{
+   llvm_assumptions_stringmap_double_free
+   Memcheck:Free
+   ...
+   obj:*/libLLVM.so*
+   fun:__cxa_finalize
+}
