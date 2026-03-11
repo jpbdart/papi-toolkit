@@ -665,6 +665,8 @@ void FunctionDatabase::loadBuiltins ()
         p0.inheritSource = 0;
         s.params.push_back (p0);
         addSummary (s);
+    }
+
     // ---- Propagation (no elevation) ----
 
     // memcpy - propagates taint from src to dest
@@ -865,7 +867,7 @@ void FunctionDatabase::loadBuiltins ()
         addSummary (s);
     }
 
-    // Sanitizers (elevate taint level)
+    // ---- Sanitizers (elevate taint level) ----
 
     // strtol - converts string to long with error detection; elevates to SYNTACTIC
     {
@@ -1298,6 +1300,7 @@ TaintState TaintAnalysisVisitor::analyzeExpr (const clang::Expr *expr)
     // where sizeof(untrusted_ptr) inherits taint from the pointer.
     if (llvm::isa<clang::UnaryExprOrTypeTraitExpr> (expr))
         return TaintState (TaintLayer::CLEAN, "sizeof/alignof");
+
 
     // Unary operator
     if (const auto *unOp = llvm::dyn_cast<clang::UnaryOperator> (expr))
