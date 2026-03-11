@@ -8,6 +8,8 @@
  * 02 Mar 26  jpb  Removed some old, unused methods. Enable provenance
  *                 flag by default.
  * 04 Mar 26  jpb  Removed unused older cmd line options.
+ * 06 Mar 26  jpb  Finished refactoring. Added DEBUG around some output.
+ * 07 Mar 26  jpb  Fixed versioning. Sorted out which files to allow to output.
  *
  */
 #include "ProvenanceTracker.h"
@@ -24,6 +26,7 @@
 #include <fstream>
 #include <map>
 #include <unistd.h>
+#include "version.h"
 
 using namespace clang::tooling;
 using namespace llvm;
@@ -31,7 +34,7 @@ using namespace llvm;
 /* 
  * Handle command line options using clang's CommonOptionsParser
  */
-static cl::OptionCategory TaintCategory ("Taint Analyzer Options");
+static cl::OptionCategory TaintCategory ("PAPI Taint Analyzer Options");
 
 static cl::opt<std::string> EmitProvenance (
     "emit-provenance",
@@ -43,9 +46,19 @@ static cl::opt<std::string> EmitFixes (
     cl::desc ("Emit fix suggestions to specified YAML file"),
     cl::value_desc ("filename"), cl::cat (TaintCategory));
 
+static cl::opt<std::string> EmitRaw (
+    "emit-raw",
+    cl::desc ("Emit raw usage report to specified YAML file"),
+    cl::value_desc ("filename"), cl::cat (TaintCategory));
+
 static cl::opt<std::string> EmitSummary (
     "emit-summary",
     cl::desc ("Emit generated function summaries to specified file"),
+    cl::value_desc ("filename"), cl::cat (TaintCategory));
+
+static cl::opt<std::string> EmitReport (
+    "emit-report",
+    cl::desc ("Emit taint violations report to specified file (in addition to stderr)"),
     cl::value_desc ("filename"), cl::cat (TaintCategory));
 
 static cl::extrahelp CommonHelp (CommonOptionsParser::HelpMessage);
@@ -67,6 +80,15 @@ static cl::extrahelp MoreHelp (
 class AnalysisContext
 {
   public:
+    void resetContext (void)
+    {
+        violations.clear ();
+        summaries.clear ();
+        rawUsages.clear ();
+        flowSensitive = false;
+        trackRawUsage = !EmitRaw.empty();
+    }
+
     std::vector<taint::TaintViolation> violations;
     std::vector<taint::FunctionSummary> summaries;
     std::vector<taint::RawUsage> rawUsages;
@@ -154,6 +176,9 @@ class ProvenanceTaintActionFactory : public FrontendActionFactory
     AnalysisContext &ctx_;
 };
 
+// Begin non class-related routines. Most are for printing and output,
+// as well as the main entry point.
+
 // Emit RAW usage report to YAML file
 bool emitRawUsageYAML (const std::vector<taint::RawUsage> &usages,
                   const std::string &filename)
@@ -164,7 +189,7 @@ bool emitRawUsageYAML (const std::vector<taint::RawUsage> &usages,
 
     out << "# PAPI Taint Analyzer - RAW Usage Report\n";
     out << "---\n";
-    out << "version: 1\n";
+    out << "version: 1.0 \n";
     out << "usage_count: " << usages.size () << "\n";
     out << "raw_usages:\n";
 
@@ -192,82 +217,61 @@ bool emitRawUsageYAML (const std::vector<taint::RawUsage> &usages,
     return true;
 }
 
-void
-printReport (AnalysisContext *ctx)
+void printReport (AnalysisContext *ctx, llvm::raw_ostream &out)
 {
-    llvm::errs () << "\n";
-    llvm::errs ()
-        << "================================================================\n";
-    llvm::errs ()
-        << "                    TAINT ANALYSIS REPORT                       \n";
-    llvm::errs () << "========================================================="
-                     "=======\n\n";
+    out << "\n";
+    out << "================================================================\n";
+    out << "                    TAINT ANALYSIS REPORT                       \n";
+    out << "================================================================\n\n";
 
     if (ctx->violations.empty ())
         {
-            llvm::errs () << "No taint violations detected.\n\n";
+            out << "No taint violations detected.\n\n";
         }
     else
         {
-            llvm::errs () << "Found " << ctx->violations.size ()
-                          << " taint violation(s):\n\n";
+            out << "Found " << ctx->violations.size ()
+                << " taint violation(s):\n\n";
 
             int i = 1;
             for (const auto &v : ctx->violations)
                 {
-                    llvm::errs () << "-----------------------------------------"
-                                     "-----------------------\n";
-                    llvm::errs () << "Violation #" << i++ << "\n";
-                    llvm::errs () << "  Location:  " << v.location << "\n";
-                    llvm::errs () << "  Variable:  " << v.variable << "\n";
-                    llvm::errs ()
-                        << "  Current:   "
+                    out << "------------------------------------------------------------\n";
+                    out << "Violation #" << i++ << "\n";
+                    out << "  Location:  " << v.location << "\n";
+                    out << "  Variable:  " << v.variable << "\n";
+                    out << "  Current:   "
                         << taint::layerToString (v.actualLayer) << "\n";
-                    llvm::errs ()
-                        << "  Required:  "
+                    out << "  Required:  "
                         << taint::layerToString (v.requiredLayer) << "\n";
-                    llvm::errs () << "  Context:   " << v.context << "\n";
+                    out << "  Context:   " << v.context << "\n";
                     if (!v.suggestion.empty ())
-                        {
-                            llvm::errs ()
-                                << "  Suggest:   " << v.suggestion << "\n";
-                        }
+                        out << "  Suggest:   " << v.suggestion << "\n";
                 }
-            llvm::errs () << "-------------------------------------------------"
-                             "---------------\n\n";
+            out << "------------------------------------------------------------\n\n";
         }
 
     if (!EmitSummary.empty () && !ctx->summaries.empty ())
         {
-            llvm::errs () << "Generated Function Summaries:\n";
-            llvm::errs () << "-------------------------------------------------"
-                             "---------------\n";
+            out << "Generated Function Summaries:\n";
+            out << "------------------------------------------------------------\n";
 
             for (const auto &s : ctx->summaries)
                 {
-                    llvm::errs () << "  " << s.name << ":\n";
-                    llvm::errs () << "    Source: " << s.sourceFile << "\n";
-                    llvm::errs () << "    Params: " << s.params.size () << "\n";
-                    llvm::errs () << "    Return: "
-                                  << taint::layerToString (s.returnLayer);
+                    out << "  " << s.name << ":\n";
+                    out << "    Source: " << s.sourceFile << "\n";
+                    out << "    Params: " << s.params.size () << "\n";
+                    out << "    Return: " << taint::layerToString (s.returnLayer);
                     if (s.returnInherits)
-                        {
-                            llvm::errs () << " (inherits from param "
-                                          << s.returnInheritSource << ")";
-                        }
-                    llvm::errs () << "\n";
+                        out << " (inherits from param " << s.returnInheritSource << ")";
+                    out << "\n";
                     if (s.isTaintSource)
-                        {
-                            llvm::errs () << "    [TAINT SOURCE]\n";
-                        }
+                        out << "    [TAINT SOURCE]\n";
                     if (s.isTaintSink)
-                        {
-                            llvm::errs ()
-                                << "    [TAINT SINK - requires "
-                                << taint::layerToString (s.sinkRequirement)
-                                << "]\n";
-                        }
-                    llvm::errs () << "\n";
+                        out << "    [TAINT SINK - requires "
+                            << taint::layerToString (s.sinkRequirement)
+                            << "]\n";
+                    out << "\n";
                 }
         }
 }
@@ -327,13 +331,30 @@ std::string findCompilationDatabase (const std::string &startPath)
     return "";
 }
 
+// Taps into the LLVM version stream to display our version.
+void printVersion(llvm::raw_ostream &OS) {
+    OS << "taint-analyzer " << VERSION_STRING
+       << " (LLVM " << LLVM_VERSION_STRING << ")\n";
+}
+
 // Main line entry point
 int main (int argc, const char **argv)
 {
+    // Create function database with built-in knowledge
+    AnalysisContext ctx;
+
+    // This goes ahead of the command line parsing, as LLVM may end the program
+    // e.g., someone uses "--help", which causes a segfault because LLVM is not
+    // unwinding properly due to a destructor ordering issue. 
+    // This stops that problem.
+    atexit([]() { _exit(0); });
+
+    llvm::cl::SetVersionPrinter(printVersion); // set our version in place
+
     // Parse command line options
     auto ExpectedParser = CommonOptionsParser::create (
         argc, argv, TaintCategory, cl::OneOrMore,
-        "Taint Analyzer - Track data flow and identify missing parsers");
+        "PAPI Taint Analyzer - Track data flow and identify missing parsers");
 
     if (!ExpectedParser)
         {
@@ -343,24 +364,15 @@ int main (int argc, const char **argv)
 
     CommonOptionsParser &OptionsParser = ExpectedParser.get ();
 
-    // Create function database with built-in knowledge
-    AnalysisContext ctx;
-
     taint::FunctionDatabase funcDb;
     ctx.funcDb = funcDb;
 
     // Clear any previous results
-    ctx.violations.clear ();
-    ctx.summaries.clear ();
-    ctx.rawUsages.clear ();
-    ctx.flowSensitive = false;
-    ctx.trackRawUsage = false;
+    ctx.resetContext();
 
     // Create provenance tracker
-    //std::unique_ptr<taint::ProvenanceTracker> provenanceTracker;
     ctx.provenanceTracker = std::make_unique<taint::ProvenanceTracker>(ctx.funcDb);
-    //ctx.provenanceTracker = provenanceTracker.get ();
-    llvm::errs () << "Provenance-aware analysis enabled\n";
+    //llvm::errs () << "Provenance-aware analysis enabled\n";
 
     // Track which source files we're analyzing (for saving summaries)
     std::vector<std::string> sourceFiles = OptionsParser.getSourcePathList ();
@@ -427,10 +439,11 @@ int main (int argc, const char **argv)
                 ClangTool Tool (*compDb, sourceFiles);
                 ProvenanceTaintActionFactory factory(ctx);
                 result = Tool.run (&factory);
-
-llvm::errs() << "Pass 1 Tool result: " << result << "\n";
-llvm::errs() << "Summaries collected: " << ctx.summaries.size() << "\n";
-llvm::errs() << "Violations collected: " << ctx.violations.size() << "\n";
+#ifdef DEBUG
+                llvm::errs() << "Pass 1 tool result: " << result << "\n";
+                llvm::errs() << "Summaries collected: " << ctx.summaries.size() << "\n";
+                llvm::errs() << "Violations collected: " << ctx.violations.size() << "\n";
+#endif
 
                 if (result)
                     llvm::errs () << "Error " << result << " running FrontEndAction in ClangTool\n";
@@ -454,9 +467,11 @@ llvm::errs() << "Violations collected: " << ctx.violations.size() << "\n";
                 ClangTool Tool (*compDb, sourceFiles);
                 ProvenanceTaintActionFactory factory(ctx);
                 result = Tool.run (&factory);
-                llvm::errs() << "Pass 2 Tool result: " << result << "\n";
-llvm::errs() << "Summaries collected: " << ctx.summaries.size() << "\n";
-llvm::errs() << "Violations collected: " << ctx.violations.size() << "\n";
+#ifdef DEBUG
+                llvm::errs() << "Pass 2 tool result: " << result << "\n";
+                llvm::errs() << "Summaries collected: " << ctx.summaries.size() << "\n";
+                llvm::errs() << "Violations collected: " << ctx.violations.size() << "\n";
+#endif
             }
 
             llvm::errs () << "\n=== Pass 2 complete ===\n";
@@ -468,15 +483,36 @@ llvm::errs() << "Violations collected: " << ctx.violations.size() << "\n";
                 ClangTool Tool (*compDb, sourceFiles);
                 ProvenanceTaintActionFactory factory(ctx);
                 result = Tool.run (&factory);
-                llvm::errs() << "Final Pass Tool result: " << result << "\n";
-llvm::errs() << "Summaries collected: " << ctx.summaries.size() << "\n";
-llvm::errs() << "Violations collected: " << ctx.violations.size() << "\n";
+#ifdef DEBUG
+                llvm::errs() << "Single file tool result: " << result << "\n";
+                llvm::errs() << "Summaries collected: " << ctx.summaries.size() << "\n";
+                llvm::errs() << "Violations collected: " << ctx.violations.size() << "\n";
+#endif
             }
         }
     // ClangTool is now destroyed, safe to access our copied results
 
-    // Print the report
-    printReport (&ctx);
+    // Print the report to stderr as before
+    printReport (&ctx, llvm::errs ());
+
+    // Mirror report to file if --emit-report was specified
+    if (!EmitReport.empty ())
+        {
+            std::error_code ec;
+            llvm::raw_fd_ostream reportFile (EmitReport, ec);
+            if (ec)
+                {
+                    llvm::errs () << "\nError: Could not open report file '"
+                                  << EmitReport << "': " << ec.message ()
+                                  << "\n";
+                }
+            else
+                {
+                    printReport (&ctx, reportFile);
+                    llvm::errs () << "\nReport written to: " << EmitReport
+                                  << "\n";
+                }
+        }
 
     // Provenance analysis output
     {
@@ -493,6 +529,19 @@ llvm::errs() << "Violations collected: " << ctx.violations.size() << "\n";
         // Compute minimal parse points
         std::set<taint::ParsePoint> parsePoints
             = ctx.provenanceTracker->computeMinimalParsePoints (ctx.summaries);
+
+        // Emit RAW usage report to YAML if requested
+        if (!EmitRaw.empty() && !ctx.rawUsages.empty())
+        {
+            if (emitRawUsageYAML(ctx.rawUsages, EmitRaw))
+            {
+                llvm::errs() << "\nRAW usage report written to: " << EmitRaw << "\n";
+            } 
+            else 
+            {
+                llvm::errs() << "\nError: Could not write RAW report to " << EmitRaw << "\n";
+            }
+        }   
 
         // Generate and emit fixes from parse points
         if (!parsePoints.empty () && !EmitFixes.empty ())
@@ -544,8 +593,11 @@ llvm::errs() << "Violations collected: " << ctx.violations.size() << "\n";
     // __run_exit_handlers then __cxa_finalize attempts a second free of the same block.
     // _exit() bypasses this by skipping destructor processing entirely.
     // See: double-free in llvm::StringMap destructor during __cxa_finalize.
+    //
+    // 07 Mar 26 commented the _exit out as we handle it at the top of main() with
+    // the atexit call. This is left here for history,
     llvm::errs().flush();
-    _exit(exitCode);
+//    _exit(exitCode);
 
     return exitCode; // Not reached, but prevents compiler warnings
 }

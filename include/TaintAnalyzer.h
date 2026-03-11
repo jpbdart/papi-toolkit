@@ -334,6 +334,10 @@ class FunctionDatabase
     bool isKnownParser (const std::string &name) const;
     TaintLayer getParserOutputLayer (const std::string &name) const;
 
+    // Register a parser by name and output layer. Called by
+    // ParserRegistry::registerWithFuncDb() rather than directly.
+    void registerParser (const std::string &name, TaintLayer outputLayer);
+
     void loadBuiltins (); // Load standard library summaries
 
   private:

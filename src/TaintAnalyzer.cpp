@@ -5,9 +5,11 @@
  *
  * Date       Pgm  Comment
  * 18 Jan 26  jpb  Creation.
+ * 08 Mar 26  jpb  A few more comments and cleanup.
  *
  */
 #include "TaintAnalyzer.h"
+#include "ParserRegistry.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/Expr.h"
@@ -195,9 +197,19 @@ TaintLayer FunctionDatabase::getParserOutputLayer (const std::string &name) cons
     return TaintLayer::RAW;
 }
 
+// Register a parser directly by name and output layer.
+// Called by ParserRegistry::registerWithFuncDb().
+void FunctionDatabase::registerParser (const std::string &name,
+                                       TaintLayer outputLayer)
+{
+    parsers_[name] = outputLayer;
+}
+
+// Load all our built-in sources and sinks. 
 void FunctionDatabase::loadBuiltins ()
 {
-    // ---- Taint Sources ----
+    // Taint Sources - this is where untrusted data enters the program, 
+    // so we don't yet trust the data.
 
     // fread - reads from file into buffer
     {
@@ -277,7 +289,199 @@ void FunctionDatabase::loadBuiltins ()
         addSummary (s);
     }
 
-    // ---- Taint Sinks ----
+    // recvfrom - network receive with address (UDP etc.)
+    {
+        FunctionSummary s;
+        s.name = "recvfrom";
+        s.isTaintSource = true;
+        s.returnLayer = TaintLayer::CLEAN; // returns byte count
+        ParamSummary p1;
+        p1.index = 1;
+        p1.direction = ParamDirection::OUT;
+        p1.requiredLayer = TaintLayer::CLEAN;
+        p1.outputLayer = TaintLayer::RAW;
+        p1.inheritsFromParam = false;
+        p1.inheritSource = 0;
+        s.params.push_back (p1);
+        addSummary (s);
+    }
+
+    // recvmsg - network receive with message header
+    {
+        FunctionSummary s;
+        s.name = "recvmsg";
+        s.isTaintSource = true;
+        s.returnLayer = TaintLayer::CLEAN; // returns byte count
+        ParamSummary p1;
+        p1.index = 1;
+        p1.direction = ParamDirection::OUT;
+        p1.requiredLayer = TaintLayer::CLEAN;
+        p1.outputLayer = TaintLayer::RAW;
+        p1.inheritsFromParam = false;
+        p1.inheritSource = 0;
+        s.params.push_back (p1);
+        addSummary (s);
+    }
+
+    // pread - positional read, same semantics as read
+    {
+        FunctionSummary s;
+        s.name = "pread";
+        s.isTaintSource = true;
+        s.returnLayer = TaintLayer::CLEAN; // returns byte count
+        ParamSummary p1;
+        p1.index = 1;
+        p1.direction = ParamDirection::OUT;
+        p1.requiredLayer = TaintLayer::CLEAN;
+        p1.outputLayer = TaintLayer::RAW;
+        p1.inheritsFromParam = false;
+        p1.inheritSource = 0;
+        s.params.push_back (p1);
+        addSummary (s);
+    }
+
+    // gets - legacy unsafe line read; entire buffer becomes RAW
+    {
+        FunctionSummary s;
+        s.name = "gets";
+        s.isTaintSource = true;
+        s.returnLayer = TaintLayer::RAW; // returns buffer or NULL
+        ParamSummary p0;
+        p0.index = 0;
+        p0.direction = ParamDirection::OUT;
+        p0.requiredLayer = TaintLayer::CLEAN;
+        p0.outputLayer = TaintLayer::RAW;
+        p0.inheritsFromParam = false;
+        p0.inheritSource = 0;
+        s.params.push_back (p0);
+        addSummary (s);
+    }
+
+    // getline - POSIX line read; output buffer becomes RAW
+    {
+        FunctionSummary s;
+        s.name = "getline";
+        s.isTaintSource = true;
+        s.returnLayer = TaintLayer::CLEAN; // returns byte count
+        ParamSummary p0;
+        p0.index = 0;
+        p0.direction = ParamDirection::OUT;
+        p0.requiredLayer = TaintLayer::CLEAN;
+        p0.outputLayer = TaintLayer::RAW;
+        p0.inheritsFromParam = false;
+        p0.inheritSource = 0;
+        s.params.push_back (p0);
+        addSummary (s);
+    }
+
+    // scanf - reads from stdin into variadic args; format string is param 0
+    //         variadic output args become RAW
+    {
+        FunctionSummary s;
+        s.name = "scanf";
+        s.isTaintSource = true;
+        s.returnLayer = TaintLayer::CLEAN; // returns number of items matched
+        addSummary (s);
+    }
+
+    // fscanf - like scanf but reads from FILE*; format string is param 1
+    {
+        FunctionSummary s;
+        s.name = "fscanf";
+        s.isTaintSource = true;
+        s.returnLayer = TaintLayer::CLEAN; // returns number of items matched
+        addSummary (s);
+    }
+
+    // readline - interactive line input from terminal; returns RAW heap buffer
+    {
+        FunctionSummary s;
+        s.name = "readline";
+        s.isTaintSource = true;
+        s.returnLayer = TaintLayer::RAW;
+        addSummary (s);
+    }
+
+    // dlopen - dynamic library loading; path (param 0) is a source if
+    //          attacker-controlled, and a sink requiring SEMANTIC validation.
+    //          Registered once here as both source and sink.
+    {
+        FunctionSummary s;
+        s.name = "dlopen";
+        s.isTaintSource = true;
+        s.isTaintSink = true;
+        s.sinkRequirement = TaintLayer::SEMANTIC;
+        s.returnLayer = TaintLayer::RAW;
+        ParamSummary p0;
+        p0.index = 0;
+        p0.direction = ParamDirection::IN;
+        p0.requiredLayer = TaintLayer::SEMANTIC;
+        p0.outputLayer = TaintLayer::CLEAN;
+        p0.inheritsFromParam = false;
+        p0.inheritSource = 0;
+        s.params.push_back (p0);
+        addSummary (s);
+    }
+
+    // dlsym - symbol lookup; symbol name (param 1) is a source if
+    //         attacker-controlled, and a sink requiring SEMANTIC validation.
+    //         Registered once here as both source and sink.
+    {
+        FunctionSummary s;
+        s.name = "dlsym";
+        s.isTaintSource = true;
+        s.isTaintSink = true;
+        s.sinkRequirement = TaintLayer::SEMANTIC;
+        s.returnLayer = TaintLayer::RAW;
+        ParamSummary p1;
+        p1.index = 1;
+        p1.direction = ParamDirection::IN;
+        p1.requiredLayer = TaintLayer::SEMANTIC;
+        p1.outputLayer = TaintLayer::CLEAN;
+        p1.inheritsFromParam = false;
+        p1.inheritSource = 0;
+        s.params.push_back (p1);
+        addSummary (s);
+    }
+
+    // msgrcv - System V message queue receive; message buffer (param 1) becomes RAW
+    {
+        FunctionSummary s;
+        s.name = "msgrcv";
+        s.isTaintSource = true;
+        s.returnLayer = TaintLayer::CLEAN; // returns bytes received
+        ParamSummary p1;
+        p1.index = 1;
+        p1.direction = ParamDirection::OUT;
+        p1.requiredLayer = TaintLayer::CLEAN;
+        p1.outputLayer = TaintLayer::RAW;
+        p1.inheritsFromParam = false;
+        p1.inheritSource = 0;
+        s.params.push_back (p1);
+        addSummary (s);
+    }
+
+    // mq_receive - POSIX message queue receive; buffer (param 1) becomes RAW
+    {
+        FunctionSummary s;
+        s.name = "mq_receive";
+        s.isTaintSource = true;
+        s.returnLayer = TaintLayer::CLEAN; // returns bytes received
+        ParamSummary p1;
+        p1.index = 1;
+        p1.direction = ParamDirection::OUT;
+        p1.requiredLayer = TaintLayer::CLEAN;
+        p1.outputLayer = TaintLayer::RAW;
+        p1.inheritsFromParam = false;
+        p1.inheritSource = 0;
+        s.params.push_back (p1);
+        addSummary (s);
+    }
+
+    // Taint Sinks are where data is consumed in a security-sensitive way.
+    // Sinks are where we need to trust the data. They require some sort of 
+    // validation level (SYNTACTIC, SEMANTIC, or CONTEXTUAL) before data can
+    // safely flow into them.
 
     // system - command execution
     {
@@ -305,21 +509,171 @@ void FunctionDatabase::loadBuiltins ()
         addSummary (s);
     }
 
+    // execvp - exec with PATH search
+    {
+        FunctionSummary s;
+        s.name = "execvp";
+        s.isTaintSink = true;
+        s.sinkRequirement = TaintLayer::CONTEXTUAL;
+        addSummary (s);
+    }
+
+    // execv - exec with argv array
+    {
+        FunctionSummary s;
+        s.name = "execv";
+        s.isTaintSink = true;
+        s.sinkRequirement = TaintLayer::CONTEXTUAL;
+        addSummary (s);
+    }
+
+    // execl - exec with varargs
+    {
+        FunctionSummary s;
+        s.name = "execl";
+        s.isTaintSink = true;
+        s.sinkRequirement = TaintLayer::CONTEXTUAL;
+        addSummary (s);
+    }
+
+    // execlp - exec with PATH search and varargs
+    {
+        FunctionSummary s;
+        s.name = "execlp";
+        s.isTaintSink = true;
+        s.sinkRequirement = TaintLayer::CONTEXTUAL;
+        addSummary (s);
+    }
+
+    // popen - command execution via shell, same risk as system
+    {
+        FunctionSummary s;
+        s.name = "popen";
+        s.isTaintSink = true;
+        s.sinkRequirement = TaintLayer::CONTEXTUAL;
+        ParamSummary p0;
+        p0.index = 0;
+        p0.direction = ParamDirection::IN;
+        p0.requiredLayer = TaintLayer::CONTEXTUAL;
+        p0.outputLayer = TaintLayer::CLEAN;
+        p0.inheritsFromParam = false;
+        p0.inheritSource = 0;
+        s.params.push_back (p0);
+        addSummary (s);
+    }
+
+    // printf - format string sink; format arg (param 0) must be CONTEXTUAL
+    {
+        FunctionSummary s;
+        s.name = "printf";
+        s.isTaintSink = true;
+        s.sinkRequirement = TaintLayer::CONTEXTUAL;
+        ParamSummary p0;
+        p0.index = 0;
+        p0.direction = ParamDirection::IN;
+        p0.requiredLayer = TaintLayer::CONTEXTUAL;
+        p0.outputLayer = TaintLayer::CLEAN;
+        p0.inheritsFromParam = false;
+        p0.inheritSource = 0;
+        s.params.push_back (p0);
+        addSummary (s);
+    }
+
+    // fprintf - format string sink; format arg is param 1 (param 0 is FILE*)
+    {
+        FunctionSummary s;
+        s.name = "fprintf";
+        s.isTaintSink = true;
+        s.sinkRequirement = TaintLayer::CONTEXTUAL;
+        ParamSummary p1;
+        p1.index = 1;
+        p1.direction = ParamDirection::IN;
+        p1.requiredLayer = TaintLayer::CONTEXTUAL;
+        p1.outputLayer = TaintLayer::CLEAN;
+        p1.inheritsFromParam = false;
+        p1.inheritSource = 0;
+        s.params.push_back (p1);
+        addSummary (s);
+    }
+
+    // open - path injection risk; path arg (param 0) must be SEMANTIC
+    {
+        FunctionSummary s;
+        s.name = "open";
+        s.isTaintSink = true;
+        s.sinkRequirement = TaintLayer::SEMANTIC;
+        ParamSummary p0;
+        p0.index = 0;
+        p0.direction = ParamDirection::IN;
+        p0.requiredLayer = TaintLayer::SEMANTIC;
+        p0.outputLayer = TaintLayer::CLEAN;
+        p0.inheritsFromParam = false;
+        p0.inheritSource = 0;
+        s.params.push_back (p0);
+        addSummary (s);
+    }
+
+    // fopen - path injection risk; path arg (param 0) must be SEMANTIC
+    {
+        FunctionSummary s;
+        s.name = "fopen";
+        s.isTaintSink = true;
+        s.sinkRequirement = TaintLayer::SEMANTIC;
+        ParamSummary p0;
+        p0.index = 0;
+        p0.direction = ParamDirection::IN;
+        p0.requiredLayer = TaintLayer::SEMANTIC;
+        p0.outputLayer = TaintLayer::CLEAN;
+        p0.inheritsFromParam = false;
+        p0.inheritSource = 0;
+        s.params.push_back (p0);
+        addSummary (s);
+    }
+
+    // dlopen and dlsym are registered above as combined source+sink entries.
+
+    // EVP_DecryptUpdate - OpenSSL decryption; RAW size arg (param 4) is
+    //                    particularly dangerous as it controls buffer writes
+    {
+        FunctionSummary s;
+        s.name = "EVP_DecryptUpdate";
+        s.isTaintSink = true;
+        s.sinkRequirement = TaintLayer::SEMANTIC;
+        ParamSummary p4;
+        p4.index = 4;                          // inl - input length
+        p4.direction = ParamDirection::IN;
+        p4.requiredLayer = TaintLayer::SEMANTIC;
+        p4.outputLayer = TaintLayer::CLEAN;
+        p4.inheritsFromParam = false;
+        p4.inheritSource = 0;
+        s.params.push_back (p4);
+        addSummary (s);
+    }
+
+    // RSA_public_decrypt - OpenSSL RSA decrypt; flen (param 0) must be SEMANTIC
+    {
+        FunctionSummary s;
+        s.name = "RSA_public_decrypt";
+        s.isTaintSink = true;
+        s.sinkRequirement = TaintLayer::SEMANTIC;
+        ParamSummary p0;
+        p0.index = 0;                          // flen - input length
+        p0.direction = ParamDirection::IN;
+        p0.requiredLayer = TaintLayer::SEMANTIC;
+        p0.outputLayer = TaintLayer::CLEAN;
+        p0.inheritsFromParam = false;
+        p0.inheritSource = 0;
+        s.params.push_back (p0);
+        addSummary (s);
     // ---- Propagation (no elevation) ----
 
     // memcpy - propagates taint from src to dest
+    // Dest (param 0) is an OUT buffer - not sink-checked, no requiredLayer.
     {
         FunctionSummary s;
         s.name = "memcpy";
         s.returnInherits = true;
         s.returnInheritSource = 0; // returns dest
-        ParamSummary p0;
-        p0.index = 0;
-        p0.direction = ParamDirection::OUT;
-        p0.requiredLayer = TaintLayer::CLEAN;
-        p0.outputLayer = TaintLayer::RAW;
-        p0.inheritsFromParam = true;
-        p0.inheritSource = 1; // inherits from src
         ParamSummary p1;
         p1.index = 1;
         p1.direction = ParamDirection::IN;
@@ -327,24 +681,17 @@ void FunctionDatabase::loadBuiltins ()
         p1.outputLayer = TaintLayer::RAW;
         p1.inheritsFromParam = false;
         p1.inheritSource = 0;
-        s.params.push_back (p0);
         s.params.push_back (p1);
         addSummary (s);
     }
 
     // strcpy - propagates taint
+    // Dest (param 0) is an OUT buffer - not sink-checked, no requiredLayer.
     {
         FunctionSummary s;
         s.name = "strcpy";
         s.returnInherits = true;
         s.returnInheritSource = 0;
-        ParamSummary p0;
-        p0.index = 0;
-        p0.direction = ParamDirection::OUT;
-        p0.requiredLayer = TaintLayer::CLEAN;
-        p0.outputLayer = TaintLayer::RAW;
-        p0.inheritsFromParam = true;
-        p0.inheritSource = 1;
         ParamSummary p1;
         p1.index = 1;
         p1.direction = ParamDirection::IN;
@@ -352,7 +699,6 @@ void FunctionDatabase::loadBuiltins ()
         p1.outputLayer = TaintLayer::RAW;
         p1.inheritsFromParam = false;
         p1.inheritSource = 0;
-        s.params.push_back (p0);
         s.params.push_back (p1);
         addSummary (s);
     }
@@ -374,14 +720,217 @@ void FunctionDatabase::loadBuiltins ()
         addSummary (s);
     }
 
-    // ---- Example Parsers (users would add their own) ----
+    // memmove - like memcpy but handles overlap; propagates taint src -> dest
+    // Dest (param 0) is an OUT buffer - not sink-checked, no requiredLayer.
+    {
+        FunctionSummary s;
+        s.name = "memmove";
+        s.returnInherits = true;
+        s.returnInheritSource = 0;
+        ParamSummary p1;
+        p1.index = 1;
+        p1.direction = ParamDirection::IN;
+        p1.requiredLayer = TaintLayer::RAW;
+        p1.outputLayer = TaintLayer::RAW;
+        p1.inheritsFromParam = false;
+        p1.inheritSource = 0;
+        s.params.push_back (p1);
+        addSummary (s);
+    }
 
-    // For demonstration: functions named parse_* elevate to SYNTACTIC
-    // In real use, this would be configured
-    parsers_["parse_int"] = TaintLayer::SYNTACTIC;
-    parsers_["parse_date"] = TaintLayer::SYNTACTIC;
-    parsers_["validate_date"] = TaintLayer::SEMANTIC;
-    parsers_["validate_birthdate"] = TaintLayer::CONTEXTUAL;
+    // strncpy - bounded string copy; propagates taint src -> dest
+    // Dest (param 0) is an OUT buffer - not sink-checked, no requiredLayer.
+    {
+        FunctionSummary s;
+        s.name = "strncpy";
+        s.returnInherits = true;
+        s.returnInheritSource = 0;
+        ParamSummary p1;
+        p1.index = 1;
+        p1.direction = ParamDirection::IN;
+        p1.requiredLayer = TaintLayer::RAW;
+        p1.outputLayer = TaintLayer::RAW;
+        p1.inheritsFromParam = false;
+        p1.inheritSource = 0;
+        s.params.push_back (p1);
+        addSummary (s);
+    }
+
+    // strcat - string concatenation; propagates taint src -> dest
+    // Dest (param 0) is an OUT buffer - not sink-checked, no requiredLayer.
+    {
+        FunctionSummary s;
+        s.name = "strcat";
+        s.returnInherits = true;
+        s.returnInheritSource = 0;
+        ParamSummary p1;
+        p1.index = 1;
+        p1.direction = ParamDirection::IN;
+        p1.requiredLayer = TaintLayer::RAW;
+        p1.outputLayer = TaintLayer::RAW;
+        p1.inheritsFromParam = false;
+        p1.inheritSource = 0;
+        s.params.push_back (p1);
+        addSummary (s);
+    }
+
+    // strncat - bounded string concatenation; propagates taint src -> dest
+    // Dest (param 0) is an OUT buffer - not sink-checked, no requiredLayer.
+    {
+        FunctionSummary s;
+        s.name = "strncat";
+        s.returnInherits = true;
+        s.returnInheritSource = 0;
+        ParamSummary p1;
+        p1.index = 1;
+        p1.direction = ParamDirection::IN;
+        p1.requiredLayer = TaintLayer::RAW;
+        p1.outputLayer = TaintLayer::RAW;
+        p1.inheritsFromParam = false;
+        p1.inheritSource = 0;
+        s.params.push_back (p1);
+        addSummary (s);
+    }
+
+    // memset - fill memory; size (param 2) may be attacker-controlled,
+    //          causing an oversized write. Destination pointer (param 0)
+    //          is not flagged — zeroing a caller-provided buffer is normal.
+    //          Trying to flag param 0 causes too many false positives.
+    {
+        FunctionSummary s;
+        s.name = "memset";
+        s.isTaintSink = true;
+        s.sinkRequirement = TaintLayer::SEMANTIC;
+        ParamSummary p2;
+        p2.index = 2;                          // size
+        p2.direction = ParamDirection::IN;
+        p2.requiredLayer = TaintLayer::SEMANTIC;
+        p2.outputLayer = TaintLayer::CLEAN;
+        p2.inheritsFromParam = false;
+        p2.inheritSource = 0;
+        s.params.push_back (p2);
+        addSummary (s);
+    }
+
+    // sprintf - format into buffer; dest (param 0) inherits taint from format
+    //           args; also a sink if format string (param 1) is RAW
+    {
+        FunctionSummary s;
+        s.name = "sprintf";
+        s.isTaintSink = true;
+        s.sinkRequirement = TaintLayer::CONTEXTUAL;
+        s.returnLayer = TaintLayer::CLEAN; // returns char count
+        ParamSummary p0;
+        p0.index = 0;
+        p0.direction = ParamDirection::OUT;
+        p0.requiredLayer = TaintLayer::CLEAN;
+        p0.outputLayer = TaintLayer::RAW;
+        p0.inheritsFromParam = true;
+        p0.inheritSource = 1; // inherits from format string
+        ParamSummary p1;
+        p1.index = 1;
+        p1.direction = ParamDirection::IN;
+        p1.requiredLayer = TaintLayer::CONTEXTUAL;
+        p1.outputLayer = TaintLayer::RAW;
+        p1.inheritsFromParam = false;
+        p1.inheritSource = 0;
+        s.params.push_back (p0);
+        s.params.push_back (p1);
+        addSummary (s);
+    }
+
+    // snprintf - bounded format into buffer; same semantics as sprintf
+    {
+        FunctionSummary s;
+        s.name = "snprintf";
+        s.isTaintSink = true;
+        s.sinkRequirement = TaintLayer::CONTEXTUAL;
+        s.returnLayer = TaintLayer::CLEAN; // returns char count
+        ParamSummary p0;
+        p0.index = 0;
+        p0.direction = ParamDirection::OUT;
+        p0.requiredLayer = TaintLayer::CLEAN;
+        p0.outputLayer = TaintLayer::RAW;
+        p0.inheritsFromParam = true;
+        p0.inheritSource = 2; // param 0 is dest, param 1 is size, param 2 is format
+        ParamSummary p2;
+        p2.index = 2;
+        p2.direction = ParamDirection::IN;
+        p2.requiredLayer = TaintLayer::CONTEXTUAL;
+        p2.outputLayer = TaintLayer::RAW;
+        p2.inheritsFromParam = false;
+        p2.inheritSource = 0;
+        s.params.push_back (p0);
+        s.params.push_back (p2);
+        addSummary (s);
+    }
+
+    // Sanitizers (elevate taint level)
+
+    // strtol - converts string to long with error detection; elevates to SYNTACTIC
+    {
+        FunctionSummary s;
+        s.name = "strtol";
+        s.returnLayer = TaintLayer::SYNTACTIC;
+        addSummary (s);
+    }
+
+    // strtoul - unsigned variant of strtol
+    {
+        FunctionSummary s;
+        s.name = "strtoul";
+        s.returnLayer = TaintLayer::SYNTACTIC;
+        addSummary (s);
+    }
+
+    // strtoll - long long variant of strtol
+    {
+        FunctionSummary s;
+        s.name = "strtoll";
+        s.returnLayer = TaintLayer::SYNTACTIC;
+        addSummary (s);
+    }
+
+    // sscanf - elevates to SYNTACTIC when used for type conversion
+    {
+        FunctionSummary s;
+        s.name = "sscanf";
+        s.returnLayer = TaintLayer::SYNTACTIC;
+        addSummary (s);
+    }
+
+    // inet_pton - validates and converts IP address string; elevates to SEMANTIC
+    {
+        FunctionSummary s;
+        s.name = "inet_pton";
+        s.returnLayer = TaintLayer::SEMANTIC;
+        addSummary (s);
+    }
+
+    // inet_aton - older IP address validation; elevates to SEMANTIC
+    {
+        FunctionSummary s;
+        s.name = "inet_aton";
+        s.returnLayer = TaintLayer::SEMANTIC;
+        addSummary (s);
+    }
+
+    // ---- Parsers (elevate taint level) ----
+    // Parser registration is now handled by ParserRegistry, which owns
+    // the canonical list of known parsers. The registry populates the
+    // parsers_ map here via registerWithFuncDb(), and also serves
+    // FixEmitter for fix suggestions.  Add new parsers in
+    // ParserRegistry::loadBuiltinParsers() rather than here.
+    {
+        ParserRegistry registry;
+        registry.registerWithFuncDb (*this);
+    }
+
+    // Example parsers for demonstration - user-defined parsers can be
+    // added here or loaded from a config file. These show the pattern:
+    // call registerParser() with the function name and its output layer.
+    //
+    // registerParser ("my_parse_foo", TaintLayer::SYNTACTIC);
 }
 
 //
@@ -743,6 +1292,12 @@ TaintState TaintAnalysisVisitor::analyzeExpr (const clang::Expr *expr)
         {
             return analyzeExpr (member->getBase ());
         }
+
+    // sizeof, alignof, __typeof__ - always compile-time constants, always CLEAN
+    // regardless of the type or expression operand. This prevents false positives
+    // where sizeof(untrusted_ptr) inherits taint from the pointer.
+    if (llvm::isa<clang::UnaryExprOrTypeTraitExpr> (expr))
+        return TaintState (TaintLayer::CLEAN, "sizeof/alignof");
 
     // Unary operator
     if (const auto *unOp = llvm::dyn_cast<clang::UnaryOperator> (expr))
@@ -1166,37 +1721,53 @@ void TaintAnalysisVisitor::recordRawUsage (const std::string &var,
 std::string TaintAnalysisVisitor::suggestParserForUsage (RawUsageType type,
                                              const std::string &context)
 {
+    // Delegate to the registry where possible, using the sink name extracted
+    // from context as the lookup key. Fall back to usage-type heuristics for
+    // cases the registry does not cover (pointer deref, bare comparison, etc.)
+    ParserRegistry registry;
+
+    // Extract a sink name from context if present (e.g. "passed to strlen")
+    std::string sinkName;
+    for (const auto &candidate : {"atoi", "strtol", "strlen", "strcpy",
+                                   "strcat", "printf", "fprintf", "system",
+                                   "execve", "malloc", "memcpy"})
+        {
+            if (context.find (candidate) != std::string::npos)
+                {
+                    sinkName = candidate;
+                    break;
+                }
+        }
+
+    if (!sinkName.empty ())
+        {
+            auto entries = registry.findForSink (sinkName);
+            if (!entries.empty ())
+                return entries[0].name;
+        }
+
+    // Usage-type fallbacks for cases without a sink match
     switch (type)
         {
         case RawUsageType::ARRAY_INDEX:
-            return "langsec_parse_bounded_size (bounds check required)";
+            return registry.findForType ("size_t").name.empty ()
+                       ? "langsec_parse_size"
+                       : registry.findForType ("size_t").name;
         case RawUsageType::ARITHMETIC:
             if (context.find ("float") != std::string::npos
                 || context.find ("double") != std::string::npos)
-                {
-                    return "langsec_parse_double";
-                }
-            return "langsec_parse_int32 or appropriate integer parser";
+                return "langsec_parse_double";
+            return registry.findForType ("int32_t").name.empty ()
+                       ? "langsec_parse_int32"
+                       : registry.findForType ("int32_t").name;
+        case RawUsageType::STRING_OP:
+            return registry.findForType ("const char *").name.empty ()
+                       ? "langsec_parse_string"
+                       : registry.findForType ("const char *").name;
         case RawUsageType::POINTER_DEREF:
             return "validate pointer/ensure non-null";
-        case RawUsageType::STRING_OP:
-            return "langsec_parse_string (length-bounded)";
         case RawUsageType::COMPARISON:
             return "type-appropriate parser based on comparison";
-        case RawUsageType::FUNCTION_ARG:
-            // Context might tell us more
-            if (context.find ("atoi") != std::string::npos
-                || context.find ("strtol") != std::string::npos)
-                {
-                    return "langsec_parse_int32 (replaces unsafe conversion)";
-                }
-            if (context.find ("strlen") != std::string::npos
-                || context.find ("strcpy") != std::string::npos
-                || context.find ("strcat") != std::string::npos)
-                {
-                    return "langsec_parse_string (length-bounded)";
-                }
-            return ""; // Can't infer
         default:
             return "";
         }

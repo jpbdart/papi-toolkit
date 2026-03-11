@@ -5,10 +5,12 @@
  *
  * Date       Pgm  Comment
  * 18 Jan 26  jpb  Creation.
+ * 08 Mar 26  jpb  Change inferTypeFrom Name to use a map.
  *
  */
 
 #include "TaintFixEmitter.h"
+#include "ParserRegistry.h"
 #include <algorithm>
 #include <fstream>
 #include <iomanip>
@@ -24,9 +26,8 @@ namespace taint
 
 FixEmitter::FixEmitter () : nextFixId_ (1) {}
 
-std::vector<Fix>
-FixEmitter::generateFixes (const std::vector<TaintViolation> &violations,
-                           const FunctionDatabase &funcDb)
+std::vector<Fix> FixEmitter::generateFixes (const std::vector<TaintViolation> &violations,
+                 const FunctionDatabase &funcDb)
 {
 
     std::vector<Fix> fixes;
@@ -106,9 +107,8 @@ FixEmitter::generateFixes (const std::vector<TaintViolation> &violations,
             fix.placeholderCode = generatePlaceholder (fix);
 
             // Check if we can auto-fix
-            fix.canAutoFix
-                = !fix.suggestedParsers.empty ()
-                  && fix.suggestedParsers[0].confidence == FixConfidence::HIGH;
+            fix.canAutoFix = !fix.suggestedParsers.empty ()
+                             && fix.suggestedParsers[0].confidence == FixConfidence::HIGH;
 
             if (fix.canAutoFix)
                 {
@@ -195,8 +195,7 @@ FixEmitter::generateFixesFromParsePoints (
             fix.placeholderCode = generatePlaceholder (fix);
 
             // Check if we can auto-fix
-            fix.canAutoFix
-                = !fix.suggestedParsers.empty ()
+            fix.canAutoFix = !fix.suggestedParsers.empty ()
                   && fix.suggestedParsers[0].confidence == FixConfidence::HIGH;
 
             if (fix.canAutoFix)
@@ -214,95 +213,85 @@ FixEmitter::generateFixesFromParsePoints (
     return fixes;
 }
 
+// The PoC uses a limited set of functions to search for, otherwise
+// it passes back a custom solution is needed. Future versions should
+// suggestParsers - delegate entirely to ParserRegistry.
+// The registry searches in priority order: type > sink > variable name.
+// If nothing matches, fall back to CUSTOM_PARSER so the output is never
+// empty and the developer always gets an actionable placeholder.
 std::vector<SuggestedParser>
 FixEmitter::suggestParsers (const TaintViolation &violation,
                             const FunctionDatabase &funcDb)
 {
-
     (void)funcDb;
-    std::vector<SuggestedParser> suggestions;
 
-    // Infer type from variable name
-    std::string inferredType = inferTypeFromName (violation.variable);
-
-    if (!inferredType.empty ())
-        {
-            SuggestedParser p = findParserForType (inferredType);
-            if (!p.name.empty ())
-                {
-                    suggestions.push_back (p);
-                }
-        }
-
-    // Look for sink-specific parsers
+    // Extract sink name from violation context if present
     std::string sinkName;
     if (violation.context.find ("passed to sink function '")
         != std::string::npos)
         {
             size_t start = violation.context.find ("'") + 1;
-            size_t end = violation.context.find ("'", start);
+            size_t end   = violation.context.find ("'", start);
             if (end != std::string::npos)
-                {
-                    sinkName = violation.context.substr (start, end - start);
-                }
+                sinkName = violation.context.substr (start, end - start);
         }
 
-    if (!sinkName.empty ())
+    ParserRegistry registry;
+    auto entries = registry.suggestForViolation (violation.variable,
+                                                 sinkName);
+
+    std::vector<SuggestedParser> suggestions;
+    for (const auto &e : entries)
         {
-            auto sinkParsers = findParsersForSink (sinkName);
-            for (const auto &p : sinkParsers)
-                {
-                    bool found = false;
-                    for (const auto &existing : suggestions)
-                        {
-                            if (existing.name == p.name)
-                                {
-                                    found = true;
-                                    break;
-                                }
-                        }
-                    if (!found)
-                        suggestions.push_back (p);
-                }
+            SuggestedParser p;
+            p.name        = e.name;
+            p.header      = e.header;
+            p.outputLayer = e.outputLayer;
+            p.confidence  = e.confidence;
+            p.reason      = e.reason;
+            suggestions.push_back (p);
         }
 
+    // Fallback: no registry match — developer must provide a custom parser
     if (suggestions.empty ())
         {
             SuggestedParser p;
-            p.name = "CUSTOM_PARSER";
+            p.name        = "CUSTOM_PARSER";
+            p.header      = "";
             p.outputLayer = violation.requiredLayer;
-            p.confidence = FixConfidence::UNKNOWN;
-            p.reason = "No built-in parser - custom implementation needed";
+            p.confidence  = FixConfidence::UNKNOWN;
+            p.reason      = "No built-in parser matched — custom implementation needed";
             suggestions.push_back (p);
         }
 
     return suggestions;
 }
 
-std::string
-FixEmitter::inferTypeFromName (const std::string &varName)
+// inferTypeFromName is retained as a private helper for callers that
+// want to resolve a C type string from a variable name before querying
+// the registry by type. The registry's matchVarNames entries cover the
+// same heuristics, so this is only needed if a type-exact lookup is
+// preferred over a name-substring lookup.
+std::string FixEmitter::inferTypeFromName (const std::string &varName)
 {
     std::string lower = varName;
     std::transform (lower.begin (), lower.end (), lower.begin (), ::tolower);
 
-    if (lower.find ("port") != std::string::npos)
-        return "uint16_t";
-    if (lower.find ("ip") != std::string::npos)
-        return "ip_address";
-    if (lower.find ("email") != std::string::npos)
-        return "email";
-    if (lower.find ("url") != std::string::npos)
-        return "url";
-    if (lower.find ("id") != std::string::npos)
-        return "int32_t";
-    if (lower.find ("num") != std::string::npos)
-        return "int32_t";
-    if (lower.find ("count") != std::string::npos)
-        return "int32_t";
-    if (lower.find ("size") != std::string::npos)
-        return "size_t";
-    if (lower.find ("flag") != std::string::npos)
-        return "bool";
+    static const std::pair<std::string_view, std::string_view> rules[] = {
+        {"port",  "uint16_t"},
+        {"ip",    "ip_address"},
+        {"email", "email"},
+        {"url",   "url"},
+        {"id",    "int32_t"},
+        {"num",   "int32_t"},
+        {"count", "int32_t"},
+        {"size",  "size_t"},
+        {"flag",  "bool"},
+    };
+
+    for (auto &[keyword, type] : rules)
+        if (lower.find (keyword) != std::string::npos)
+            return std::string (type);
 
     return "";
 }
@@ -310,99 +299,56 @@ FixEmitter::inferTypeFromName (const std::string &varName)
 InsertionPoint FixEmitter::findInsertionPoint (const TaintViolation &v)
 {
     InsertionPoint ip;
-    size_t firstColon = v.location.find (':');
+    size_t firstColon  = v.location.find (':');
     size_t secondColon = v.location.find (':', firstColon + 1);
 
     if (firstColon != std::string::npos && secondColon != std::string::npos)
         {
-            ip.file = v.location.substr (0, firstColon);
-            ip.line = std::stoul (v.location.substr (
+            ip.file   = v.location.substr (0, firstColon);
+            ip.line   = std::stoul (v.location.substr (
                 firstColon + 1, secondColon - firstColon - 1));
             ip.column = std::stoul (v.location.substr (secondColon + 1));
         }
     ip.position = InsertionPosition::Before;
-    ip.scope = "statement";
+    ip.scope    = "statement";
     return ip;
 }
 
-SuggestedParser FixEmitter::findParserForType (const std::string &type)
+// findParserForType and findParsersForSink are thin wrappers kept for
+// any callers outside suggestParsers that may use them directly. They
+// now delegate to the registry rather than maintaining their own tables.
+SuggestedParser
+FixEmitter::findParserForType (const std::string &type)
 {
+    ParserRegistry registry;
+    ParserEntry e = registry.findForType (type);
+    if (e.name.empty ())
+        return {};
     SuggestedParser p;
-
-    if (type == "int32_t" || type == "int")
-        {
-            p.name = "langsec_parse_int32";
-            p.header = "langsec/primitive.h";
-            p.outputLayer = TaintLayer::SYNTACTIC;
-            p.confidence = FixConfidence::HIGH;
-            p.reason = "Type match: int32_t";
-        }
-    else if (type == "uint16_t")
-        {
-            p.name = "langsec_parse_uint16";
-            p.header = "langsec/primitive.h";
-            p.outputLayer = TaintLayer::SYNTACTIC;
-            p.confidence = FixConfidence::HIGH;
-            p.reason = "Type match: uint16_t";
-        }
-    else if (type == "size_t")
-        {
-            p.name = "langsec_parse_size";
-            p.header = "langsec/primitive.h";
-            p.outputLayer = TaintLayer::SYNTACTIC;
-            p.confidence = FixConfidence::HIGH;
-            p.reason = "Type match: size_t";
-        }
-    else if (type == "bool")
-        {
-            p.name = "langsec_parse_bool";
-            p.header = "langsec/primitive.h";
-            p.outputLayer = TaintLayer::SEMANTIC;
-            p.confidence = FixConfidence::HIGH;
-            p.reason = "Type match: bool";
-        }
-    else if (type == "ip_address")
-        {
-            p.name = "langsec_parse_ipv4";
-            p.header = "langsec/net.h";
-            p.outputLayer = TaintLayer::SEMANTIC;
-            p.confidence = FixConfidence::MEDIUM;
-            p.reason = "Inferred: IP address";
-        }
-    else if (type == "email")
-        {
-            p.name = "langsec_parse_email";
-            p.header = "langsec/net.h";
-            p.outputLayer = TaintLayer::SYNTACTIC;
-            p.confidence = FixConfidence::MEDIUM;
-            p.reason = "Inferred: email";
-        }
-    else if (type == "url")
-        {
-            p.name = "langsec_parse_url";
-            p.header = "langsec/net.h";
-            p.outputLayer = TaintLayer::SYNTACTIC;
-            p.confidence = FixConfidence::MEDIUM;
-            p.reason = "Inferred: URL";
-        }
+    p.name        = e.name;
+    p.header      = e.header;
+    p.outputLayer = e.outputLayer;
+    p.confidence  = e.confidence;
+    p.reason      = e.reason;
     return p;
 }
 
-std::vector<SuggestedParser> FixEmitter::findParsersForSink (const std::string &sinkName)
+std::vector<SuggestedParser>
+FixEmitter::findParsersForSink (const std::string &sinkName)
 {
-    std::vector<SuggestedParser> parsers;
-
-    if (sinkName == "system" || sinkName == "popen" || sinkName == "execve")
+    ParserRegistry registry;
+    std::vector<SuggestedParser> results;
+    for (const auto &e : registry.findForSink (sinkName))
         {
             SuggestedParser p;
-            p.name = "langsec_parse_string_enum";
-            p.header = "langsec/primitive.h";
-            p.outputLayer = TaintLayer::CONTEXTUAL;
-            p.confidence = FixConfidence::LOW;
-            p.reason = "Shell commands should use whitelist";
-            parsers.push_back (p);
+            p.name        = e.name;
+            p.header      = e.header;
+            p.outputLayer = e.outputLayer;
+            p.confidence  = e.confidence;
+            p.reason      = e.reason;
+            results.push_back (p);
         }
-    return parsers;
+    return results;
 }
 
 std::string FixEmitter::generatePlaceholder (const Fix &fix)
@@ -413,17 +359,14 @@ std::string FixEmitter::generatePlaceholder (const Fix &fix)
                                       : fix.suggestedParsers[0].name);
 }
 
-std::string
-FixEmitter::generateAutoFix (const Fix &fix)
+std::string FixEmitter::generateAutoFix (const Fix &fix)
 {
     if (fix.suggestedParsers.empty ())
         return "";
     const auto &parser = fix.suggestedParsers[0];
     std::string code;
     if (!parser.header.empty ())
-        {
-            code += CodeGenerator::generateInclude (parser.header);
-        }
+        code += CodeGenerator::generateInclude (parser.header);
     code += CodeGenerator::generateParseCall (
         parser.name, fix.variable, fix.variable + "_parsed", "return -1");
     return code;

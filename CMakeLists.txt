@@ -8,8 +8,11 @@
 # 02 Mar 26  jpb  Updated for papi-annotate.
 #
 #
-cmake_minimum_required(VERSION 3.16)
-project(TaintAnalyzer VERSION 0.1.0 LANGUAGES C CXX)
+cmake_minimum_required(VERSION 3.28)
+project(TaintAnalyzer VERSION 0.2.0 LANGUAGES C CXX)
+
+# Make version available as a header
+configure_file(version.h.in version.h)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -33,6 +36,14 @@ link_directories(${LLVM_LIBRARY_DIRS})
 
 # Our include directory
 include_directories(${CMAKE_SOURCE_DIR}/include)
+
+# Debug flags. I use -DDEBUG in compilation
+# To enable cmake -DDEBUG_BUILD=ON
+option(DEBUG_BUILD "Enable debug output" OFF)
+
+if(DEBUG_BUILD)
+    add_compile_definitions(DEBUG)
+endif()
 
 # Get required LLVM components
 llvm_map_components_to_libnames(LLVM_LIBS
@@ -61,12 +72,16 @@ set(CLANG_LIBS
 # Build the analyzer
 add_executable(taint-analyzer
     src/main.cpp
+    src/ParserRegistry.cpp
+    src/ProvenanceTracker.cpp
     src/TaintAnalyzer.cpp
     src/TaintSummaryFile.cpp
     src/TaintFixEmitter.cpp
     src/TaintFixEmitter_output.cpp
-    src/ProvenanceTracker.cpp
 )
+
+# Include the generated header directory
+target_include_directories(taint-analyzer PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 
 target_link_libraries(taint-analyzer
     ${CLANG_LIBS}
@@ -74,9 +89,8 @@ target_link_libraries(taint-analyzer
 )
 
 # Build the annotator tool (standalone, no LLVM deps)
-add_executable(papi-annotate src/papi-annotate.cpp
-)
-
+add_executable(papi-annotate src/papi-annotate.cpp)
+target_include_directories(papi-annotate PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 
 # Installation
 install(TARGETS taint-analyzer papi-annotate DESTINATION bin)

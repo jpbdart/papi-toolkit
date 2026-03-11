@@ -44,6 +44,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include "version.h"
 
 namespace fs = std::filesystem;
 
@@ -764,6 +765,7 @@ void printUsage (const char *progName)
     std::cout << "Usage: " << progName << " <fix_suggestions.yaml> [options]\n\n";
     std::cout << "Insert LangSec parser suggestion comments into C source files.\n";
     std::cout << "Reads fix suggestions produced by the PAPI taint analyzer (--provenance mode).\n\n";
+    std::cout << "Version: " << VERSION_STRING << "\n";
     std::cout << "Options:\n";
     std::cout << "  --dry-run           Show what would be changed without modifying files\n";
     std::cout << "  --backup            Create .bak backup files before modifying\n";
@@ -774,6 +776,11 @@ void printUsage (const char *progName)
     std::cout << "  " << progName << " fix_suggestions.yaml --dry-run\n";
     std::cout << "  " << progName << " fix_suggestions.yaml --backup --verbose\n";
     std::cout << "  " << progName << " fix_suggestions.yaml --output-dir=./annotated\n";
+}
+
+void printVersion (const char *progName)
+{
+    std::cout << progName << " version " << VERSION_STRING << "\n";
 }
 
 //
@@ -797,6 +804,11 @@ int main (int argc, char *argv[])
             if (arg == "--help" || arg == "-h")
                 {
                     printUsage (argv[0]);
+                    return 0;
+                }
+            else if (arg == "-v" || arg == "--version")
+                {
+                    printVersion (argv[0]);
                     return 0;
                 }
             else if (arg == "--dry-run")

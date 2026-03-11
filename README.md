@@ -15,6 +15,4 @@ This tool implements multi-layer taint tracking to identify where parsing is nee
 | CONTEXTUAL | Use-specific constraints | Birthdate must be in the past |
 | CLEAN | Not tainted | Literals, computed values |
 
-**Note:** We currently are testing the analyzer before we move it to the "production" branch, and here. As soon as we complete testing, we will finish uploading code to the repository.
-
-Updated: 01 Mar 2026
+Updated: 11 Mar 2026
