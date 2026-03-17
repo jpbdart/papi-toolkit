@@ -5,6 +5,7 @@
  *
  * Date       Pgm  Comment
  * 18 Jan 26  jpb  Creation.
+ * 10 Mar 26  jpb  Added annotation support
  *
  */
 #ifndef PROVENANCE_TRACKER_H
@@ -33,6 +34,12 @@ struct ParsePoint
     TaintLayer requiredLevel; // Required taint level
     std::string reason;       // Why this parse point is needed
     std::string location;     // Source location for insertion
+
+    // stratum:suppress annotation support.
+    // When true the parse point is still emitted in YAML output (for
+    // auditability) but marked suppressed:true with the reason string.
+    bool        suppressed       = false;
+    std::string suppressReason;
 
     bool
     operator< (const ParsePoint &other) const

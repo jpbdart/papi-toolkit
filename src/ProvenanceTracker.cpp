@@ -5,9 +5,11 @@
  *
  * Date       Pgm  Comment
  * 18 Jan 26  jpb  Creation.
+ * 10 Mar 26  jpb  Added annotation
  *
  */
 #include "ProvenanceTracker.h"
+#include "StratumAnnotation.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/Expr.h"
@@ -63,7 +65,19 @@ ProvenanceTracker::analyzeFunction (clang::FunctionDecl *func,
 
     analyzeParameterModifications (summary);
     analyzeCallSites (summary);
-    summary.rebuildParamSets ();
+
+    // stratum:validates overrides: a parameter declared as already validated
+    // should be treated as PASS_THROUGH regardless of what the body does to it,
+    // because the annotation expresses the author's intent that the value
+    // entering the function already meets the declared taint level.
+    for (const auto &[idx, level] : summary.validatesOverrides)
+        {
+            if (idx < summary.params.size ())
+                {
+                    summary.params[idx].modStatus = ParamModStatus::PASS_THROUGH;
+                    summary.params[idx].outputLayer = level;
+                }
+        }
 
     for (auto i = 0u; i < summary.params.size (); ++i)
         {
@@ -425,8 +439,29 @@ std::set<ParsePoint> ProvenanceTracker::computeMinimalParsePoints (
                             TaintLayer requiredLevel = TaintLayer::RAW;
                             if (calleeSummary->isTaintSink)
                                 {
-                                    requiredLevel
-                                        = calleeSummary->sinkRequirement;
+                                    // Look for a per-parameter requirement first.
+                                    // If the param list has an entry for this
+                                    // argument position, use its requiredLayer.
+                                    // Only fall back to the global sinkRequirement
+                                    // when no specific entry exists for this param.
+                                    bool foundParam = false;
+                                    for (const auto &sp : calleeSummary->params)
+                                        {
+                                            if (sp.index == i)
+                                                {
+                                                    requiredLevel = sp.requiredLayer;
+                                                    foundParam = true;
+                                                    break;
+                                                }
+                                        }
+                                    if (!foundParam)
+                                        {
+                                            // No entry for this param index:
+                                            // do NOT apply the global sink
+                                            // requirement — only params explicitly
+                                            // listed as sensitive are flagged.
+                                            requiredLevel = TaintLayer::RAW;
+                                        }
                                 }
                             else if (i < calleeSummary->params.size ())
                                 {
@@ -449,6 +484,16 @@ std::set<ParsePoint> ProvenanceTracker::computeMinimalParsePoints (
                                     pp.reason = "Modified before passing to "
                                                 + cs.calleeName;
                                     pp.location = cs.location;
+
+                                    // Check for stratum:suppress annotation
+                                    auto suppIt = summary.suppressedParams.find (
+                                        binding.callerParamIndex);
+                                    if (suppIt != summary.suppressedParams.end ())
+                                        {
+                                            pp.suppressed     = true;
+                                            pp.suppressReason = suppIt->second;
+                                        }
+
                                     parsePoints.insert (pp);
                                 }
                         }
@@ -456,7 +501,7 @@ std::set<ParsePoint> ProvenanceTracker::computeMinimalParsePoints (
 
             for (unsigned paramIdx : summary.paramsFlowToSink)
                 {
-                    if (summary.modifiedParams.count (paramIdx))
+                    if (summary.isModified (paramIdx))
                         {
                             ParsePoint pp;
                             pp.functionName = summary.name;
@@ -466,6 +511,43 @@ std::set<ParsePoint> ProvenanceTracker::computeMinimalParsePoints (
                             pp.currentLevel = TaintLayer::RAW;
                             pp.requiredLevel = summary.paramSinkRequirement;
                             pp.reason = "Modified parameter flows to sink";
+
+                            // Find the location of the sink call site that
+                            // triggered this parse point, so the output has
+                            // a useful file/line rather than <unknown>/0.
+                            for (const auto &cs : summary.callSites)
+                                {
+                                    auto calleeSummary
+                                        = funcDb_.lookup (cs.calleeName);
+                                    if (calleeSummary
+                                        && calleeSummary->isTaintSink)
+                                        {
+                                            // Check that this call site
+                                            // involves our param
+                                            for (const auto &b : cs.bindings)
+                                                {
+                                                    if (b.fromCallerParam
+                                                        && b.callerParamIndex
+                                                               == paramIdx)
+                                                        {
+                                                            pp.location
+                                                                = cs.location;
+                                                            break;
+                                                        }
+                                                }
+                                        }
+                                    if (!pp.location.empty ())
+                                        break;
+                                }
+
+                            // Check for stratum:suppress annotation
+                            auto suppIt = summary.suppressedParams.find (paramIdx);
+                            if (suppIt != summary.suppressedParams.end ())
+                                {
+                                    pp.suppressed     = true;
+                                    pp.suppressReason = suppIt->second;
+                                }
+
                             parsePoints.insert (pp);
                         }
                 }
@@ -479,7 +561,7 @@ bool
 ProvenanceTracker::isPassThrough (const FunctionSummary &summary,
                                   unsigned paramIdx)
 {
-    return summary.passThroughParams.count (paramIdx) > 0;
+    return summary.isPassThrough (paramIdx);
 }
 
 void
@@ -492,7 +574,7 @@ ProvenanceTracker::dumpSummary (const FunctionSummary &summary)
             if (!param.name.empty ())
                 llvm::errs () << param.name << ": ";
             llvm::errs () << modStatusToString (param.modStatus);
-            if (summary.passThroughParams.count (param.index))
+            if (summary.isPassThrough (param.index))
                 llvm::errs () << " (PASS-THROUGH)";
             llvm::errs () << "\n";
         }
@@ -633,10 +715,9 @@ InterproceduralPropagator::propagateAndComputeParsePoints ()
                     if (it != propagatedLevels_.end ())
                         currentLevel = it->second;
 
-                    if (static_cast<int> (currentLevel)
-                        < static_cast<int> (summary.paramSinkRequirement))
+                    if (currentLevel < summary.paramSinkRequirement)
                         {
-                            if (summary.modifiedParams.count (paramIdx))
+                            if (summary.isModified (paramIdx))
                                 {
                                     ParsePoint pp;
                                     pp.functionName = summary.name;
@@ -664,7 +745,17 @@ InterproceduralPropagator::initializeLevels ()
         {
             for (unsigned i = 0; i < summary.params.size (); ++i)
                 {
-                    propagatedLevels_[{ summary.name, i }] = TaintLayer::RAW;
+                    // Default: RAW
+                    TaintLayer init = TaintLayer::RAW;
+
+                    // stratum:validates overrides the initial level — the
+                    // author has declared this param already meets a higher
+                    // level when the function is called.
+                    auto ovIt = summary.validatesOverrides.find (i);
+                    if (ovIt != summary.validatesOverrides.end ())
+                        init = ovIt->second;
+
+                    propagatedLevels_[{ summary.name, i }] = init;
                 }
         }
 }

@@ -6,10 +6,11 @@
 # Date       Pgm  Comment
 # 18 Jan 26  jpb  Creation.
 # 02 Mar 26  jpb  Updated for papi-annotate.
+# 11 Mar 26  jpb  Added stratum notation
 #
 #
 cmake_minimum_required(VERSION 3.28)
-project(TaintAnalyzer VERSION 0.2.0 LANGUAGES C CXX)
+project(TaintAnalyzer VERSION 0.3.5 LANGUAGES C CXX)
 
 # Make version available as a header
 configure_file(version.h.in version.h)
@@ -74,6 +75,7 @@ add_executable(taint-analyzer
     src/main.cpp
     src/ParserRegistry.cpp
     src/ProvenanceTracker.cpp
+    src/StratumAnnotation.cpp
     src/TaintAnalyzer.cpp
     src/TaintSummaryFile.cpp
     src/TaintFixEmitter.cpp
@@ -91,6 +93,7 @@ target_link_libraries(taint-analyzer
 # Build the annotator tool (standalone, no LLVM deps)
 add_executable(papi-annotate src/papi-annotate.cpp)
 target_include_directories(papi-annotate PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
 
 # Installation
 install(TARGETS taint-analyzer papi-annotate DESTINATION bin)

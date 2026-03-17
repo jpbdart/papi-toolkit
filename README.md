@@ -15,4 +15,15 @@ This tool implements multi-layer taint tracking to identify where parsing is nee
 | CONTEXTUAL | Use-specific constraints | Birthdate must be in the past |
 | CLEAN | Not tainted | Literals, computed values |
 
-Updated: 11 Mar 2026
+More information on the analyzer is located in [ANALYZER.md](ANALYZER.md).
+
+## STRATUM Annotations
+
+PAPI supports `__attribute__((annotate(...)))` annotations using the `stratum:` prefix.
+These annotations let you communicate information to the analyzer that it cannot infer
+from source alone — most importantly, the taint behaviour of library functions whose source is not available to PAPI.
+
+More information on this is located in [STRATUM.md](STRATUM.md).
+
+Updated: 16 Mar 2026
+

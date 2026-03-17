@@ -76,10 +76,9 @@ class ParserRegistry
     // Register a single parser entry (for user-defined parsers).
     void registerParser (const ParserEntry &entry);
 
-    // ----------------------------------------------------------------
+    //
     // Lookups used by FunctionDatabase
-    // ----------------------------------------------------------------
-
+    //
     // Returns true if name is a known parser function.
     bool isKnownParser (const std::string &name) const;
 
@@ -91,10 +90,9 @@ class ParserRegistry
     // Called by FunctionDatabase::loadBuiltins() to avoid duplication.
     void registerWithFuncDb (FunctionDatabase &db) const;
 
-    // ----------------------------------------------------------------
+    //
     // Lookups used by FixEmitter
-    // ----------------------------------------------------------------
-
+    //
     // Find the best parser for a given C type name.
     // Returns an empty ParserEntry (name == "") if none found.
     ParserEntry findForType (const std::string &cType) const;

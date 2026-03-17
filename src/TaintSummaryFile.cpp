@@ -5,6 +5,7 @@
  *
  * Date       Pgm  Comment
  * 18 Jan 26  jpb  Creation.
+ * 10 Mar 26  jpb  Refactoring
  *
  */
 #include "TaintSummaryFile.h"
@@ -474,8 +475,6 @@ SummaryFileReader::read (const std::string &filename,
         }
     if (inFunction)
         {
-            // Rebuild the pass-through/modified sets from params
-            currentFunc.rebuildParamSets ();
             summaries.push_back (currentFunc);
         }
 

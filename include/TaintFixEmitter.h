@@ -111,10 +111,19 @@ class FixEmitter
     generateFixesFromParsePoints (const std::set<ParsePoint> &parsePoints,
                                   const FunctionDatabase &funcDb);
 
+    // Generate suppressed-entry records for auditability (separate from fixes)
+    std::vector<Fix>
+    generateSuppressedFromParsePoints (const std::set<ParsePoint> &parsePoints);
+
     // Output formats
-    bool emitYAML (const std::vector<Fix> &fixes, const std::string &filename);
+    bool emitYAML (const std::vector<Fix> &fixes, const std::string &filename,
+                   const std::vector<Fix> &suppressed = {});
     bool emitJSON (const std::vector<Fix> &fixes, const std::string &filename);
     void emitToStdout (const std::vector<Fix> &fixes);
+
+    // RAW usage report (--emit-raw); consolidated here with other YAML output
+    static bool emitRawUsageYAML (const std::vector<RawUsage> &usages,
+                                  const std::string &filename);
 
     // Generate placeholder code
     std::string generatePlaceholder (const Fix &fix);

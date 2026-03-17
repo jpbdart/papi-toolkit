@@ -20,6 +20,7 @@
  *
  * Date       Pgm  Comment
  * 09 Mar 26  jpb  Creation.
+ * 12 Mar 26  jpb  Refactored parser entry/selection
  *
  */
 
@@ -37,209 +38,150 @@ ParserRegistry::ParserRegistry ()
     loadBuiltinParsers ();
 }
 
-// -----------------------------------------------------------------------
+//
 // loadBuiltinParsers
 //
-// Add one block per parser. Group by header to make the catalog readable.
-// -----------------------------------------------------------------------
-void
-ParserRegistry::loadBuiltinParsers ()
+// Table-driven catalog.  Each row is one ParserEntry.  Group by header.
+// To add a new parser, append a row to the table below.
+//
+void ParserRegistry::loadBuiltinParsers ()
 {
-    // ---- langsec/primitive.h ------------------------------------------
-
-    // 32-bit signed integer. The most common numeric type.
-    // Replaces atoi/atol which propagate taint without validation.
+    struct ParserSpec
     {
-        ParserEntry e;
-        e.name         = "langsec_parse_int32";
-        e.header       = "langsec/primitive.h";
-        e.outputLayer  = TaintLayer::SYNTACTIC;
-        e.confidence   = FixConfidence::HIGH;
-        e.reason       = "Safe integer parse with overflow and format checking";
-        e.matchTypes    = {"int32_t", "int"};
-        e.matchSinks    = {};
-        e.matchVarNames = {"id", "num", "count", "index", "len", "length",
-                           "val", "value", "code", "result"};
-        registerParser (e);
-    }
+        const char              *name;
+        const char              *header;
+        TaintLayer               outputLayer;
+        FixConfidence            confidence;
+        const char              *reason;
+        std::vector<std::string> matchTypes;
+        std::vector<std::string> matchSinks;
+        std::vector<std::string> matchVarNames;
+    };
 
-    // Unsigned 16-bit integer. Natural fit for port numbers and small counts.
+    const ParserSpec table[] =
     {
-        ParserEntry e;
-        e.name         = "langsec_parse_uint16";
-        e.header       = "langsec/primitive.h";
-        e.outputLayer  = TaintLayer::SYNTACTIC;
-        e.confidence   = FixConfidence::HIGH;
-        e.reason       = "Unsigned 16-bit integer; bounds enforced by type";
-        e.matchTypes    = {"uint16_t"};
-        e.matchSinks    = {};
-        e.matchVarNames = {"port"};
-        registerParser (e);
-    }
+        // langsec/primitive.h
+        // 32-bit signed integer. Replaces atoi/atol which propagate taint.
+        { "langsec_parse_int32", "langsec/primitive.h",
+          TaintLayer::SYNTACTIC, FixConfidence::HIGH,
+          "Safe integer parse with overflow and format checking",
+          {"int32_t", "int"}, {},
+          {"id", "num", "count", "index", "len", "length",
+           "val", "value", "code", "result"} },
 
-    // size_t. Used for buffer sizes and allocation lengths.
-    // Requires SEMANTIC because a syntactically valid size can still be
-    // dangerously large; callers must also bounds-check after parsing.
-    {
-        ParserEntry e;
-        e.name         = "langsec_parse_size";
-        e.header       = "langsec/primitive.h";
-        e.outputLayer  = TaintLayer::SEMANTIC;
-        e.confidence   = FixConfidence::HIGH;
-        e.reason       = "Bounded size_t; rejects negative and oversized values";
-        e.matchTypes    = {"size_t"};
-        e.matchSinks    = {"malloc", "calloc", "realloc", "memcpy",
-                           "memmove", "memset"};
-        e.matchVarNames = {"size", "sz", "len", "length", "nbytes", "buflen"};
-        registerParser (e);
-    }
+        // Unsigned 16-bit integer. Natural fit for port numbers.
+        { "langsec_parse_uint16", "langsec/primitive.h",
+          TaintLayer::SYNTACTIC, FixConfidence::HIGH,
+          "Unsigned 16-bit integer; bounds enforced by type",
+          {"uint16_t"}, {}, {"port"} },
 
-    // Boolean. Accepts "0"/"1", "true"/"false", "yes"/"no".
-    {
-        ParserEntry e;
-        e.name         = "langsec_parse_bool";
-        e.header       = "langsec/primitive.h";
-        e.outputLayer  = TaintLayer::SEMANTIC;
-        e.confidence   = FixConfidence::HIGH;
-        e.reason       = "Strict boolean; rejects all non-boolean strings";
-        e.matchTypes    = {"bool", "_Bool"};
-        e.matchSinks    = {};
-        e.matchVarNames = {"flag", "enable", "enabled", "active", "toggle"};
-        registerParser (e);
-    }
+        // size_t. Requires SEMANTIC: valid size can still be dangerously large.
+        { "langsec_parse_size", "langsec/primitive.h",
+          TaintLayer::SEMANTIC, FixConfidence::HIGH,
+          "Bounded size_t; rejects negative and oversized values",
+          {"size_t"},
+          {"malloc", "calloc", "realloc", "memcpy", "memmove", "memset"},
+          {"size", "sz", "len", "length", "nbytes", "buflen"} },
 
-    // Length-bounded string. Verifies null termination within max_len.
-    // Elevates to SYNTACTIC: the string is well-formed but not yet
-    // domain-validated. The most widely applicable parser.
-    {
-        ParserEntry e;
-        e.name         = "langsec_parse_string";
-        e.header       = "langsec/primitive.h";
-        e.outputLayer  = TaintLayer::SYNTACTIC;
-        e.confidence   = FixConfidence::HIGH;
-        e.reason       = "Length-bounded string; verifies null termination";
-        e.matchTypes    = {"char *", "const char *", "char*", "const char*"};
-        e.matchSinks    = {"strlen", "strcpy", "strncpy", "strcat", "strncat",
-                           "strcmp", "printf", "fprintf", "sprintf", "snprintf"};
-        e.matchVarNames = {"str", "string", "buf", "buffer", "msg", "message",
-                           "text", "name", "username", "input", "data"};
-        registerParser (e);
-    }
+        // Boolean. Accepts "0"/"1", "true"/"false", "yes"/"no".
+        { "langsec_parse_bool", "langsec/primitive.h",
+          TaintLayer::SEMANTIC, FixConfidence::HIGH,
+          "Strict boolean; rejects all non-boolean strings",
+          {"bool", "_Bool"}, {},
+          {"flag", "enable", "enabled", "active", "toggle"} },
 
-    // Whitelist-based string enum. Used when a value must be one of a
-    // fixed set. Elevates to CONTEXTUAL because the whitelist check is
-    // use-specific. Required before passing strings to shell commands.
-    {
-        ParserEntry e;
-        e.name         = "langsec_parse_string_enum";
-        e.header       = "langsec/primitive.h";
-        e.outputLayer  = TaintLayer::CONTEXTUAL;
-        e.confidence   = FixConfidence::LOW;
-        e.reason       = "Shell input must be whitelisted; provide allowed values";
-        e.matchTypes    = {};
-        e.matchSinks    = {"system", "popen", "execve", "execvp", "execv",
-                           "execl", "execlp"};
-        e.matchVarNames = {"cmd", "command", "arg", "argv", "shell"};
-        registerParser (e);
-    }
+        // Length-bounded string. Most widely applicable parser.
+        { "langsec_parse_string", "langsec/primitive.h",
+          TaintLayer::SYNTACTIC, FixConfidence::HIGH,
+          "Length-bounded string; verifies null termination",
+          {"char *", "const char *", "char*", "const char*"},
+          {"strlen", "strcpy", "strncpy", "strcat", "strncat",
+           "strcmp", "printf", "fprintf", "sprintf", "snprintf"},
+          {"str", "string", "buf", "buffer", "msg", "message",
+           "text", "name", "username", "input", "data"} },
 
-    // ---- langsec/net.h ------------------------------------------------
+        // Whitelist enum. Required before passing strings to shell commands.
+        { "langsec_parse_string_enum", "langsec/primitive.h",
+          TaintLayer::CONTEXTUAL, FixConfidence::LOW,
+          "Shell input must be whitelisted; provide allowed values",
+          {},
+          {"system", "popen", "execve", "execvp", "execv", "execl", "execlp"},
+          {"cmd", "command", "arg", "argv", "shell"} },
 
-    // IPv4 address. Uses inet_pton internally; elevates to SEMANTIC
-    // because the value is structurally and domain-valid as an address.
-    {
-        ParserEntry e;
-        e.name         = "langsec_parse_ipv4";
-        e.header       = "langsec/net.h";
-        e.outputLayer  = TaintLayer::SEMANTIC;
-        e.confidence   = FixConfidence::MEDIUM;
-        e.reason       = "IPv4 address validation via inet_pton";
-        e.matchTypes    = {"struct in_addr", "in_addr_t"};
-        e.matchSinks    = {"connect", "bind", "sendto"};
-        e.matchVarNames = {"ip", "addr", "address", "host", "ipaddr",
-                           "ipv4", "src_ip", "dst_ip", "peer"};
-        registerParser (e);
-    }
+        // langsec/net.h
+        // IPv4 address via inet_pton; structurally and domain-valid.
+        { "langsec_parse_ipv4", "langsec/net.h",
+          TaintLayer::SEMANTIC, FixConfidence::MEDIUM,
+          "IPv4 address validation via inet_pton",
+          {"struct in_addr", "in_addr_t"},
+          {"connect", "bind", "sendto"},
+          {"ip", "addr", "address", "host", "ipaddr",
+           "ipv4", "src_ip", "dst_ip", "peer"} },
 
-    // Hostname or FQDN. Validates label structure and length limits
-    // per RFC 1123. Does not perform DNS lookup.
-    {
-        ParserEntry e;
-        e.name         = "langsec_parse_hostname";
-        e.header       = "langsec/net.h";
-        e.outputLayer  = TaintLayer::SYNTACTIC;
-        e.confidence   = FixConfidence::MEDIUM;
-        e.reason       = "Hostname syntax per RFC 1123; no DNS resolution";
-        e.matchTypes    = {};
-        e.matchSinks    = {"getaddrinfo", "gethostbyname", "connect"};
-        e.matchVarNames = {"host", "hostname", "server", "fqdn", "domain"};
-        registerParser (e);
-    }
+        // Hostname / FQDN per RFC 1123. Does not perform DNS lookup.
+        { "langsec_parse_hostname", "langsec/net.h",
+          TaintLayer::SYNTACTIC, FixConfidence::MEDIUM,
+          "Hostname syntax per RFC 1123; no DNS resolution",
+          {},
+          {"getaddrinfo", "gethostbyname", "connect"},
+          {"host", "hostname", "server", "fqdn", "domain"} },
 
-    // URL. Validates scheme, authority, and path structure.
-    {
-        ParserEntry e;
-        e.name         = "langsec_parse_url";
-        e.header       = "langsec/net.h";
-        e.outputLayer  = TaintLayer::SYNTACTIC;
-        e.confidence   = FixConfidence::MEDIUM;
-        e.reason       = "URL syntax validation (scheme, authority, path)";
-        e.matchTypes    = {};
-        e.matchSinks    = {"fopen", "open", "curl_easy_setopt"};
-        e.matchVarNames = {"url", "uri", "endpoint", "link", "href"};
-        registerParser (e);
-    }
+        // URL - validates scheme, authority, and path structure.
+        { "langsec_parse_url", "langsec/net.h",
+          TaintLayer::SYNTACTIC, FixConfidence::MEDIUM,
+          "URL syntax validation (scheme, authority, path)",
+          {},
+          {"fopen", "open", "curl_easy_setopt"},
+          {"url", "uri", "endpoint", "link", "href"} },
 
-    // Email address. RFC 5321 syntax check.
-    {
-        ParserEntry e;
-        e.name         = "langsec_parse_email";
-        e.header       = "langsec/net.h";
-        e.outputLayer  = TaintLayer::SYNTACTIC;
-        e.confidence   = FixConfidence::MEDIUM;
-        e.reason       = "Email address syntax per RFC 5321";
-        e.matchTypes    = {};
-        e.matchSinks    = {};
-        e.matchVarNames = {"email", "mail", "address", "recipient", "sender"};
-        registerParser (e);
-    }
+        // Email address per RFC 5321.
+        { "langsec_parse_email", "langsec/net.h",
+          TaintLayer::SYNTACTIC, FixConfidence::MEDIUM,
+          "Email address syntax per RFC 5321",
+          {}, {},
+          {"email", "mail", "address", "recipient", "sender"} },
 
-    // ---- langsec/path.h -----------------------------------------------
+        // langsec/path.h
+        // Filesystem path. Rejects traversal and null bytes. Callers must
+        // still check permissions and canonicalize before use.
+        { "langsec_parse_path", "langsec/path.h",
+          TaintLayer::SEMANTIC, FixConfidence::HIGH,
+          "Path traversal prevention; rejects ../ and null bytes",
+          {},
+          {"open", "fopen", "opendir", "unlink", "rename",
+           "stat", "chmod", "chown", "mkdir"},
+          {"path", "filename", "file", "dir", "directory",
+           "filepath", "fname", "dirname"} },
+    };
 
-    // Filesystem path. Rejects traversal sequences (../) and null bytes.
-    // Elevates to SEMANTIC: structurally safe, but callers must still
-    // check permissions and canonicalize before use.
-    {
-        ParserEntry e;
-        e.name         = "langsec_parse_path";
-        e.header       = "langsec/path.h";
-        e.outputLayer  = TaintLayer::SEMANTIC;
-        e.confidence   = FixConfidence::HIGH;
-        e.reason       = "Path traversal prevention; rejects ../ and null bytes";
-        e.matchTypes    = {};
-        e.matchSinks    = {"open", "fopen", "opendir", "unlink", "rename",
-                           "stat", "chmod", "chown", "mkdir"};
-        e.matchVarNames = {"path", "filename", "file", "dir", "directory",
-                           "filepath", "fname", "dirname"};
-        registerParser (e);
-    }
+    for (const auto &spec : table)
+        {
+            ParserEntry e;
+            e.name         = spec.name;
+            e.header       = spec.header;
+            e.outputLayer  = spec.outputLayer;
+            e.confidence   = spec.confidence;
+            e.reason       = spec.reason;
+            e.matchTypes   = spec.matchTypes;
+            e.matchSinks   = spec.matchSinks;
+            e.matchVarNames = spec.matchVarNames;
+            registerParser (e);
+        }
 }
 
-// -----------------------------------------------------------------------
+//
 // registerParser
-// -----------------------------------------------------------------------
-void
-ParserRegistry::registerParser (const ParserEntry &entry)
+//
+void ParserRegistry::registerParser (const ParserEntry &entry)
 {
     byName_[entry.name] = entry;
     indexEntry (entry);
 }
 
-// -----------------------------------------------------------------------
+//
 // indexEntry - rebuild inverted indexes for one entry
-// -----------------------------------------------------------------------
-void
-ParserRegistry::indexEntry (const ParserEntry &entry)
+//
+void ParserRegistry::indexEntry (const ParserEntry &entry)
 {
     for (const auto &t : entry.matchTypes)
         byType_[t] = entry.name;
@@ -251,27 +193,24 @@ ParserRegistry::indexEntry (const ParserEntry &entry)
         byVarName_[v] = entry.name;
 }
 
-// -----------------------------------------------------------------------
+//
 // FunctionDatabase integration
-// -----------------------------------------------------------------------
-void
-ParserRegistry::registerWithFuncDb (FunctionDatabase &db) const
+//
+void ParserRegistry::registerWithFuncDb (FunctionDatabase &db) const
 {
     for (const auto &pair : byName_)
         db.registerParser (pair.second.name, pair.second.outputLayer);
 }
 
-// -----------------------------------------------------------------------
+//
 // isKnownParser / getOutputLayer
-// -----------------------------------------------------------------------
-bool
-ParserRegistry::isKnownParser (const std::string &name) const
+//
+bool ParserRegistry::isKnownParser (const std::string &name) const
 {
     return byName_.count (name) > 0;
 }
 
-TaintLayer
-ParserRegistry::getOutputLayer (const std::string &name) const
+TaintLayer ParserRegistry::getOutputLayer (const std::string &name) const
 {
     auto it = byName_.find (name);
     if (it != byName_.end ())
@@ -279,11 +218,10 @@ ParserRegistry::getOutputLayer (const std::string &name) const
     return TaintLayer::CLEAN;
 }
 
-// -----------------------------------------------------------------------
+//
 // findForType
-// -----------------------------------------------------------------------
-ParserEntry
-ParserRegistry::findForType (const std::string &cType) const
+//
+ParserEntry ParserRegistry::findForType (const std::string &cType) const
 {
     auto it = byType_.find (cType);
     if (it != byType_.end ())
@@ -295,11 +233,10 @@ ParserRegistry::findForType (const std::string &cType) const
     return {}; // empty entry: name == ""
 }
 
-// -----------------------------------------------------------------------
+//
 // findForSink
-// -----------------------------------------------------------------------
-std::vector<ParserEntry>
-ParserRegistry::findForSink (const std::string &sinkName) const
+//
+std::vector<ParserEntry> ParserRegistry::findForSink (const std::string &sinkName) const
 {
     std::vector<ParserEntry> results;
     auto it = bySink_.find (sinkName);
@@ -315,14 +252,13 @@ ParserRegistry::findForSink (const std::string &sinkName) const
     return results;
 }
 
-// -----------------------------------------------------------------------
+//
 // findForVarName
 // Lowercase the incoming name and scan all registered substrings.
 // Returns the first match found; longer substrings are not prioritized
 // here — entries are inserted in registration order.
-// -----------------------------------------------------------------------
-ParserEntry
-ParserRegistry::findForVarName (const std::string &varName) const
+//
+ParserEntry ParserRegistry::findForVarName (const std::string &varName) const
 {
     std::string lower = varName;
     std::transform (lower.begin (), lower.end (), lower.begin (), ::tolower);
@@ -339,11 +275,11 @@ ParserRegistry::findForVarName (const std::string &varName) const
     return {}; // no match
 }
 
-// -----------------------------------------------------------------------
+//
 // suggestForViolation
 // Priority: type match > sink match > variable name match.
 // Results are deduped by parser name.
-// -----------------------------------------------------------------------
+//
 std::vector<ParserEntry>
 ParserRegistry::suggestForViolation (const std::string &varName,
                                      const std::string &sinkName,

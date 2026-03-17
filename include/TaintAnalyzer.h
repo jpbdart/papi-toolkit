@@ -69,6 +69,11 @@ minLayer (TaintLayer a, TaintLayer b)
         std::min (static_cast<int> (a), static_cast<int> (b)));
 }
 
+inline bool operator<  (TaintLayer a, TaintLayer b) { return static_cast<int>(a) <  static_cast<int>(b); }
+inline bool operator>  (TaintLayer a, TaintLayer b) { return static_cast<int>(a) >  static_cast<int>(b); }
+inline bool operator<= (TaintLayer a, TaintLayer b) { return static_cast<int>(a) <= static_cast<int>(b); }
+inline bool operator>= (TaintLayer a, TaintLayer b) { return static_cast<int>(a) >= static_cast<int>(b); }
+
 //
 // Taint State for Variables
 //
@@ -79,9 +84,6 @@ struct TaintState
     std::string source;     // Where the taint originated
     std::string lastParser; // Last parser applied (if any)
 
-    //TaintState () {}
-    //TaintState (TaintLayer l, const std::string &src = "")
-    //    : layer (l), source (src), lastParser ("")
     TaintState() = default;
     TaintState (TaintLayer l, const std::string &src = "")
         : layer (l), source (src)
@@ -190,9 +192,16 @@ struct FunctionSummary
     // Provenance: call sites within this function
     std::vector<CallSiteRecord> callSites;
 
-    // Quick lookup sets (populated from params)
-    std::set<unsigned> passThroughParams; // Params that are pass-through
-    std::set<unsigned> modifiedParams;    // Params that are modified
+    // stratum: annotation overrides.
+    // validatesOverrides: paramIndex -> elevated TaintLayer after function call.
+    // These are injected by stratum:validates(...) annotations and consulted
+    // by the taint solver instead of (or in addition to) the inferred modStatus.
+    std::map<unsigned, TaintLayer> validatesOverrides;
+
+    // suppressedParams: paramIndex -> reason string.
+    // Parameters annotated with stratum:suppress(...).  Parse points for these
+    // parameters are emitted with suppressed:true rather than being omitted.
+    std::map<unsigned, std::string> suppressedParams;
 
     FunctionSummary ()
         : returnLayer (TaintLayer::CLEAN), returnInherits (false),
@@ -202,23 +211,22 @@ struct FunctionSummary
     {
     }
 
-    // Helper to rebuild lookup sets from params
-    void
-    rebuildParamSets ()
+    bool
+    isPassThrough (unsigned idx) const
     {
-        passThroughParams.clear ();
-        modifiedParams.clear ();
         for (const auto &p : params)
-            {
-                if (p.modStatus == ParamModStatus::PASS_THROUGH)
-                    {
-                        passThroughParams.insert (p.index);
-                    }
-                else if (p.modStatus == ParamModStatus::MODIFIED)
-                    {
-                        modifiedParams.insert (p.index);
-                    }
-            }
+            if (p.index == idx)
+                return p.modStatus == ParamModStatus::PASS_THROUGH;
+        return false;
+    }
+
+    bool
+    isModified (unsigned idx) const
+    {
+        for (const auto &p : params)
+            if (p.index == idx)
+                return p.modStatus == ParamModStatus::MODIFIED;
+        return false;
     }
 };
 
@@ -312,7 +320,6 @@ class TaintTracker
     void clear ();
     void merge (const TaintTracker &other); // Meet operation for dataflow
     bool equals (const TaintTracker &other) const;
-    TaintTracker copy () const;
 
   private:
     std::map<std::string, TaintState> taintMap_;
@@ -442,91 +449,6 @@ class TaintAnalysisVisitor
     void
     analyzeBlock (const clang::CFGBlock *block,
                   std::map<const clang::CFGBlock *, TaintTracker> &blockStates);
-};
-
-//
-// AST Consumer
-//
-
-class TaintAnalysisConsumer : public clang::ASTConsumer
-{
-  public:
-    explicit TaintAnalysisConsumer (clang::ASTContext *context,
-                                    FunctionDatabase &funcDb);
-
-    void HandleTranslationUnit (clang::ASTContext &context) override;
-
-    const std::vector<TaintViolation> &getViolations () const;
-    const std::vector<FunctionSummary> &getGeneratedSummaries () const;
-    const std::vector<RawUsage> &getRawUsages () const;
-
-    void setTrackRawUsage (bool enabled);
-
-  private:
-    TaintAnalysisVisitor visitor_;
-};
-
-//
-// Frontend Action
-//
-
-class TaintAnalysisAction : public clang::ASTFrontendAction
-{
-  public:
-    explicit TaintAnalysisAction (FunctionDatabase &funcDb);
-
-    std::unique_ptr<clang::ASTConsumer>
-    CreateASTConsumer (clang::CompilerInstance &ci,
-                       llvm::StringRef file) override;
-
-    void EndSourceFileAction () override;
-
-    const std::vector<TaintViolation> &
-    getViolations () const
-    {
-        return violations_;
-    }
-    const std::vector<FunctionSummary> &
-    getGeneratedSummaries () const
-    {
-        return generatedSummaries_;
-    }
-
-  private:
-    FunctionDatabase &funcDb_;
-    std::vector<TaintViolation> violations_;
-    std::vector<FunctionSummary> generatedSummaries_;
-    TaintAnalysisConsumer *consumer_ = nullptr;
-};
-
-//
-// Action Factory
-//
-
-class TaintAnalysisActionFactory : public clang::tooling::FrontendActionFactory
-{
-  public:
-    explicit TaintAnalysisActionFactory (FunctionDatabase &funcDb);
-
-    std::unique_ptr<clang::FrontendAction> create () override;
-
-    const std::vector<TaintViolation> &
-    getAllViolations () const
-    {
-        return allViolations_;
-    }
-    const std::vector<FunctionSummary> &
-    getAllSummaries () const
-    {
-        return allSummaries_;
-    }
-
-    void collectResults (TaintAnalysisAction *action);
-
-  private:
-    FunctionDatabase &funcDb_;
-    std::vector<TaintViolation> allViolations_;
-    std::vector<FunctionSummary> allSummaries_;
 };
 
 } // namespace taint

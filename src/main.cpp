@@ -1,7 +1,7 @@
 /*----------------------------------------------------------------------
  *
  * Filename: main.cpp
- * Description:
+ * Description: The main entry point for the PAPI taint analyzer.
  *
  * Date       Pgm  Comment
  * 18 Jan 26  jpb  Creation.
@@ -23,7 +23,6 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
-#include <fstream>
 #include <map>
 #include <unistd.h>
 #include "version.h"
@@ -179,44 +178,6 @@ class ProvenanceTaintActionFactory : public FrontendActionFactory
 // Begin non class-related routines. Most are for printing and output,
 // as well as the main entry point.
 
-// Emit RAW usage report to YAML file
-bool emitRawUsageYAML (const std::vector<taint::RawUsage> &usages,
-                  const std::string &filename)
-{
-    std::ofstream out (filename);
-    if (!out)
-        return false;
-
-    out << "# PAPI Taint Analyzer - RAW Usage Report\n";
-    out << "---\n";
-    out << "version: 1.0 \n";
-    out << "usage_count: " << usages.size () << "\n";
-    out << "raw_usages:\n";
-
-    for (const auto &r : usages)
-        {
-            out << "  - variable: \"" << r.variable << "\"\n";
-            out << "    location: \"" << r.location << "\"\n";
-            out << "    function: \"" << r.function << "\"\n";
-            out << "    usage_type: "
-                << taint::rawUsageTypeToString (r.usageType) << "\n";
-            out << "    context: \"" << r.usageContext << "\"\n";
-            if (!r.suggestedParser.empty ())
-                {
-                    out << "    suggested_parser: \"" << r.suggestedParser
-                        << "\"\n";
-                }
-            if (!r.suggestedType.empty ())
-                {
-                    out << "    suggested_type: \"" << r.suggestedType
-                        << "\"\n";
-                }
-            out << "\n";
-        }
-    out << "...\n";
-    return true;
-}
-
 void printReport (AnalysisContext *ctx, llvm::raw_ostream &out)
 {
     out << "\n";
@@ -276,6 +237,9 @@ void printReport (AnalysisContext *ctx, llvm::raw_ostream &out)
         }
 }
 
+// Maximum number of parent directory levels searched for compile_commands.json.
+static constexpr unsigned kMaxParentSearchDepth = 3;
+
 // Search for compile_commands.json in common locations
 std::string findCompilationDatabase (const std::string &startPath)
 {
@@ -301,9 +265,9 @@ std::string findCompilationDatabase (const std::string &startPath)
     llvm::sys::path::append (buildDir, "build");
     searchPaths.push_back (std::string (buildDir.str ()));
 
-    // Add parent directories (up to 3 levels)
+    // Add parent directories (up to kMaxParentSearchDepth levels)
     llvm::SmallString<256> parentDir = absPath;
-    for (auto i = 0u; i < 3u; ++i)
+    for (auto i = 0u; i < kMaxParentSearchDepth; ++i)
         {
             llvm::sys::path::remove_filename (parentDir);
             if (parentDir.empty ())
@@ -329,6 +293,23 @@ std::string findCompilationDatabase (const std::string &startPath)
         }
 
     return "";
+}
+
+// Run one ClangTool pass over all source files and return the tool exit code.
+static int
+runTool (CompilationDatabase &compDb,
+         const std::vector<std::string> &sourceFiles,
+         AnalysisContext &ctx)
+{
+    ClangTool Tool (compDb, sourceFiles);
+    ProvenanceTaintActionFactory factory (ctx);
+    int r = Tool.run (&factory);
+#ifdef DEBUG
+    llvm::errs () << "Tool result: " << r << "\n";
+    llvm::errs () << "Summaries collected: " << ctx.summaries.size () << "\n";
+    llvm::errs () << "Violations collected: " << ctx.violations.size () << "\n";
+#endif
+    return r;
 }
 
 // Taps into the LLVM version stream to display our version.
@@ -363,9 +344,6 @@ int main (int argc, const char **argv)
         }
 
     CommonOptionsParser &OptionsParser = ExpectedParser.get ();
-
-    taint::FunctionDatabase funcDb;
-    ctx.funcDb = funcDb;
 
     // Clear any previous results
     ctx.resetContext();
@@ -435,60 +413,30 @@ int main (int argc, const char **argv)
             // PASS 1: Build function summaries from all files
             llvm::errs () << "=== Pass 1: Building function summaries ===\n\n";
 
-            {
-                ClangTool Tool (*compDb, sourceFiles);
-                ProvenanceTaintActionFactory factory(ctx);
-                result = Tool.run (&factory);
-#ifdef DEBUG
-                llvm::errs() << "Pass 1 tool result: " << result << "\n";
-                llvm::errs() << "Summaries collected: " << ctx.summaries.size() << "\n";
-                llvm::errs() << "Violations collected: " << ctx.violations.size() << "\n";
-#endif
-
-                if (result)
-                    llvm::errs () << "Error " << result << " running FrontEndAction in ClangTool\n";
-            }
+            result = runTool (*compDb, sourceFiles, ctx);
+            if (result)
+                llvm::errs () << "Error " << result
+                              << " running FrontEndAction in ClangTool\n";
 
             llvm::errs () << "\n=== Pass 1 complete: " << ctx.summaries.size ()
                           << " function summaries collected ===\n\n";
 
-            // Add all collected summaries to the database for pass 2
-            // (They were already added during pass 1, but let's be explicit)
-
-            // Clear violations from pass 1 - we'll re-detect them in pass 2
-            // but keep the summaries
+            // Clear violations from pass 1 - re-detected in pass 2 with full
+            // cross-file knowledge; keep the summaries.
             ctx.violations.clear ();
 
             // PASS 2: Re-analyze with full function knowledge
             llvm::errs () << "=== Pass 2: Full analysis with cross-file "
                              "knowledge ===\n\n";
 
-            {
-                ClangTool Tool (*compDb, sourceFiles);
-                ProvenanceTaintActionFactory factory(ctx);
-                result = Tool.run (&factory);
-#ifdef DEBUG
-                llvm::errs() << "Pass 2 tool result: " << result << "\n";
-                llvm::errs() << "Summaries collected: " << ctx.summaries.size() << "\n";
-                llvm::errs() << "Violations collected: " << ctx.violations.size() << "\n";
-#endif
-            }
+            result = runTool (*compDb, sourceFiles, ctx);
 
             llvm::errs () << "\n=== Pass 2 complete ===\n";
         }
     else
         {
             // Single file: one pass is sufficient
-            {
-                ClangTool Tool (*compDb, sourceFiles);
-                ProvenanceTaintActionFactory factory(ctx);
-                result = Tool.run (&factory);
-#ifdef DEBUG
-                llvm::errs() << "Single file tool result: " << result << "\n";
-                llvm::errs() << "Summaries collected: " << ctx.summaries.size() << "\n";
-                llvm::errs() << "Violations collected: " << ctx.violations.size() << "\n";
-#endif
-            }
+            result = runTool (*compDb, sourceFiles, ctx);
         }
     // ClangTool is now destroyed, safe to access our copied results
 
@@ -531,27 +479,30 @@ int main (int argc, const char **argv)
             = ctx.provenanceTracker->computeMinimalParsePoints (ctx.summaries);
 
         // Emit RAW usage report to YAML if requested
-        if (!EmitRaw.empty() && !ctx.rawUsages.empty())
-        {
-            if (emitRawUsageYAML(ctx.rawUsages, EmitRaw))
+        if (!EmitRaw.empty () && !ctx.rawUsages.empty ())
             {
-                llvm::errs() << "\nRAW usage report written to: " << EmitRaw << "\n";
-            } 
-            else 
-            {
-                llvm::errs() << "\nError: Could not write RAW report to " << EmitRaw << "\n";
+                if (taint::FixEmitter::emitRawUsageYAML (ctx.rawUsages, EmitRaw))
+                    llvm::errs () << "\nRAW usage report written to: " << EmitRaw << "\n";
+                else
+                    llvm::errs () << "\nError: Could not write RAW report to " << EmitRaw << "\n";
             }
-        }   
 
         // Generate and emit fixes from parse points
         if (!parsePoints.empty () && !EmitFixes.empty ())
             {
                 taint::FixEmitter emitter;
                 std::vector<taint::Fix> provenanceFixes
-                    = emitter.generateFixesFromParsePoints (parsePoints, funcDb);
-                if (emitter.emitYAML (provenanceFixes, EmitFixes))
+                    = emitter.generateFixesFromParsePoints (parsePoints, ctx.funcDb);
+                std::vector<taint::Fix> suppressedFixes
+                    = emitter.generateSuppressedFromParsePoints (parsePoints);
+                if (emitter.emitYAML (provenanceFixes, EmitFixes, suppressedFixes))
                     {
                         llvm::errs () << "\nProvenance-based fixes written to: " << EmitFixes << "\n";
+                        if (!suppressedFixes.empty ())
+                            llvm::errs () << "  (" << suppressedFixes.size ()
+                                          << " suppressed entr"
+                                          << (suppressedFixes.size () == 1 ? "y" : "ies")
+                                          << " included for auditability)\n";
                     }
                 else
                     {
@@ -593,7 +544,6 @@ int main (int argc, const char **argv)
     // __run_exit_handlers then __cxa_finalize attempts a second free of the same block.
     // _exit() bypasses this by skipping destructor processing entirely.
     // See: double-free in llvm::StringMap destructor during __cxa_finalize.
-    //
     // 07 Mar 26 commented the _exit out as we handle it at the top of main() with
     // the atexit call. This is left here for history,
     llvm::errs().flush();

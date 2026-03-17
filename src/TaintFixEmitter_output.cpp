@@ -5,6 +5,7 @@
  *
  * Date       Pgm  Comment
  * 18 Jan 26  jpb  Creation.
+ * 12 Mar 26  jpb  Annotation changes and refactoring
  *
  */
 
@@ -21,7 +22,8 @@ namespace taint
 
 bool
 FixEmitter::emitYAML (const std::vector<Fix> &fixes,
-                      const std::string &filename)
+                      const std::string &filename,
+                      const std::vector<Fix> &suppressed)
 {
     std::ofstream out (filename);
     if (!out)
@@ -53,6 +55,40 @@ FixEmitter::emitYAML (const std::vector<Fix> &fixes,
                 }
             out << "\n";
         }
+
+    // Suppressed entries — emitted for auditability, not actionable
+    if (!suppressed.empty ())
+        {
+            out << "suppressed_count: " << suppressed.size () << "\n";
+            out << "suppressed_fixes:\n";
+            for (const auto &fix : suppressed)
+                {
+                    // Decode "reason|paramIndex" from notes
+                    std::string suppressReason = fix.notes;
+                    std::string paramIndexStr;
+                    auto sep = fix.notes.rfind ('|');
+                    if (sep != std::string::npos)
+                        {
+                            suppressReason = fix.notes.substr (0, sep);
+                            paramIndexStr  = fix.notes.substr (sep + 1);
+                        }
+
+                    out << "  - id: " << fix.id << "\n";
+                    out << "    file: \"" << fix.file << "\"\n";
+                    out << "    line: " << fix.line << "\n";
+                    out << "    variable: " << fix.variable << "\n";
+                    out << "    actual_layer: "
+                        << layerToString (fix.actualLayer) << "\n";
+                    out << "    required_layer: "
+                        << layerToString (fix.requiredLayer) << "\n";
+                    out << "    suppressed: true\n";
+                    out << "    suppress_reason: \"" << suppressReason << "\"\n";
+                    if (!paramIndexStr.empty ())
+                        out << "    parameter_index: " << paramIndexStr << "\n";
+                    out << "\n";
+                }
+        }
+
     out << "...\n";
     return true;
 }
@@ -190,6 +226,38 @@ CodeGenerator::indent (const std::string &code, int spaces)
             ss << prefix << line << "\n";
         }
     return ss.str ();
+}
+
+bool
+FixEmitter::emitRawUsageYAML (const std::vector<RawUsage> &usages,
+                               const std::string &filename)
+{
+    std::ofstream out (filename);
+    if (!out)
+        return false;
+
+    out << "# PAPI Taint Analyzer - RAW Usage Report\n";
+    out << "---\n";
+    out << "version: 1.0\n";
+    out << "usage_count: " << usages.size () << "\n";
+    out << "raw_usages:\n";
+
+    for (const auto &r : usages)
+        {
+            out << "  - variable: \"" << r.variable << "\"\n";
+            out << "    location: \"" << r.location << "\"\n";
+            out << "    function: \"" << r.function << "\"\n";
+            out << "    usage_type: " << rawUsageTypeToString (r.usageType) << "\n";
+            out << "    context: \"" << r.usageContext << "\"\n";
+            if (!r.suggestedParser.empty ())
+                out << "    suggested_parser: \"" << r.suggestedParser << "\"\n";
+            if (!r.suggestedType.empty ())
+                out << "    suggested_type: \"" << r.suggestedType << "\"\n";
+            out << "\n";
+        }
+
+    out << "...\n";
+    return true;
 }
 
 } // namespace taint

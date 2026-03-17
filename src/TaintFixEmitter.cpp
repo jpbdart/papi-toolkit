@@ -6,6 +6,7 @@
  * Date       Pgm  Comment
  * 18 Jan 26  jpb  Creation.
  * 08 Mar 26  jpb  Change inferTypeFrom Name to use a map.
+ * 10 Mar 26  jpb  Refactoring
  *
  */
 
@@ -130,6 +131,12 @@ FixEmitter::generateFixesFromParsePoints (
 
     for (const auto &pp : parsePoints)
         {
+            // Suppressed parse points are handled separately by
+            // generateSuppressedFromParsePoints — skip them here so they
+            // do not appear in the actionable fix list.
+            if (pp.suppressed)
+                continue;
+
             Fix fix;
 
             // Generate ID
@@ -203,9 +210,8 @@ FixEmitter::generateFixesFromParsePoints (
                     fix.autoFixCode = generateAutoFix (fix);
                 }
 
-            // Add note about provenance
-            fix.notes = "Identified via provenance analysis (parameter index: "
-                        + std::to_string (pp.paramIndex) + ")";
+            // Clear notes for non-suppressed actionable fixes.
+            fix.notes = "";
 
             fixes.push_back (fix);
         }
@@ -213,7 +219,67 @@ FixEmitter::generateFixesFromParsePoints (
     return fixes;
 }
 
-// The PoC uses a limited set of functions to search for, otherwise
+// Companion to generateFixesFromParsePoints: returns lightweight Fix records
+// for parse points suppressed via stratum:suppress(...).  These are emitted
+// in a separate YAML section for auditability — they are not actionable.
+std::vector<Fix>
+FixEmitter::generateSuppressedFromParsePoints (
+    const std::set<ParsePoint> &parsePoints)
+{
+    std::vector<Fix> suppressed;
+
+    for (const auto &pp : parsePoints)
+        {
+            if (!pp.suppressed)
+                continue;
+
+            Fix fix;
+            std::stringstream idss;
+            idss << "s" << std::setfill ('0') << std::setw (3) << nextFixId_++;
+            fix.id = idss.str ();
+
+            if (!pp.location.empty ())
+                {
+                    size_t firstColon  = pp.location.find (':');
+                    size_t secondColon = pp.location.find (':', firstColon + 1);
+                    if (firstColon != std::string::npos
+                        && secondColon != std::string::npos)
+                        {
+                            fix.file   = pp.location.substr (0, firstColon);
+                            fix.line   = std::stoul (pp.location.substr (
+                                firstColon + 1, secondColon - firstColon - 1));
+                            fix.column = std::stoul (
+                                pp.location.substr (secondColon + 1));
+                        }
+                    else
+                        {
+                            fix.file   = pp.location;
+                            fix.line   = 0;
+                            fix.column = 0;
+                        }
+                }
+            else
+                {
+                    fix.file   = "<unknown>";
+                    fix.line   = 0;
+                    fix.column = 0;
+                }
+
+            fix.variable      = pp.paramName;
+            fix.actualLayer   = pp.currentLevel;
+            fix.requiredLayer = pp.requiredLevel;
+            fix.context       = pp.reason + " in function " + pp.functionName;
+            fix.isProvenance  = true;
+            fix.canAutoFix    = false;
+            // Encode reason and index for the YAML emitter
+            fix.notes = pp.suppressReason + "|" + std::to_string (pp.paramIndex);
+
+            suppressed.push_back (fix);
+        }
+
+    return suppressed;
+}
+
 // it passes back a custom solution is needed. Future versions should
 // suggestParsers - delegate entirely to ParserRegistry.
 // The registry searches in priority order: type > sink > variable name.
@@ -272,7 +338,8 @@ FixEmitter::suggestParsers (const TaintViolation &violation,
 // the registry by type. The registry's matchVarNames entries cover the
 // same heuristics, so this is only needed if a type-exact lookup is
 // preferred over a name-substring lookup.
-std::string FixEmitter::inferTypeFromName (const std::string &varName)
+std::string
+FixEmitter::inferTypeFromName (const std::string &varName)
 {
     std::string lower = varName;
     std::transform (lower.begin (), lower.end (), lower.begin (), ::tolower);
