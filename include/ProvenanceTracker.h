@@ -6,6 +6,7 @@
  * Date       Pgm  Comment
  * 18 Jan 26  jpb  Creation.
  * 10 Mar 26  jpb  Added annotation support
+ * 05 Apr 26  jpb  Fixed issue with calculation of parse points
  *
  */
 #ifndef PROVENANCE_TRACKER_H
@@ -76,12 +77,11 @@ class ProvenanceTracker
     void analyzeFunction (clang::FunctionDecl *func, clang::ASTContext *context,
                           FunctionSummary &summary);
 
-    // Compute minimal parse points from all analyzed summaries
-    std::set<ParsePoint> computeMinimalParsePoints (const std::vector<FunctionSummary> &summaries);
+    // Compute minimal parse points from all analyzed summaries and violations
+    std::set<ParsePoint> computeMinimalParsePoints (std::vector<FunctionSummary> &summaries, std::span<const TaintViolation> violations = {});
 
     // Check if a parameter is pass-through (unmodified)
-    static bool isPassThrough (const FunctionSummary &summary,
-                               unsigned paramIdx);
+    static bool isPassThrough (const FunctionSummary &summary, unsigned paramIdx);
 
     // Dump analysis results for a summary
     static void dumpSummary (const FunctionSummary &summary);
@@ -148,7 +148,7 @@ class InterproceduralPropagator
     // Propagate taint levels using provenance information
     // Updates summaries in place with propagated information
     // Returns the set of minimal parse points needed
-    std::set<ParsePoint> propagateAndComputeParsePoints ();
+    std::set<ParsePoint> propagateAndComputeParsePoints (std::span<const TaintViolation> violations);
 
   private:
     FunctionDatabase &funcDb_;
@@ -157,9 +157,8 @@ class InterproceduralPropagator
     // Taint levels after propagation: (funcName, paramIdx) -> level
     std::map<std::pair<std::string, unsigned>, TaintLayer> propagatedLevels_;
 
-    // Build a map for quick lookup
-    std::map<std::string, FunctionSummary *> summaryMap_;
-
+    // Build a map for quick lookup; changed to unordered_map for more speed.
+    std::unordered_map<std::string, FunctionSummary *, StringHash, std::equal_to<>> summaryMap_;
     void buildSummaryMap ();
     void initializeLevels ();
     bool iterateOnce ();

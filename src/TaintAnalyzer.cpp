@@ -8,6 +8,8 @@
  * 08 Mar 26  jpb  A few more comments and cleanup.
  * 09 Mar 26  jpb  Refactoring
  * 10 Mar 26  jpb  Added annotation.
+ * 22 Mar 26  jpb  Updating with more C++20 constructs.
+ * 05 Apr 26  jpb  Coding mistake; change IgnoreParenCasts -> IgnoreParenImpCasts
  *
  */
 #include "TaintAnalyzer.h"
@@ -168,17 +170,17 @@ FunctionDatabase::lookup (const std::string &name) const
 
 bool FunctionDatabase::isKnownSource (const std::string &name) const
 {
-    return sources_.count (name) > 0;
+    return sources_.contains (name);
 }
 
 bool FunctionDatabase::isKnownSink (const std::string &name) const
 {
-    return sinks_.count (name) > 0;
+    return sinks_.contains (name);
 }
 
 bool FunctionDatabase::isKnownParser (const std::string &name) const
 {
-    return parsers_.count (name) > 0;
+    return parsers_.contains (name);
 }
 
 TaintLayer FunctionDatabase::getParserOutputLayer (const std::string &name) const
@@ -1071,8 +1073,7 @@ void TaintAnalysisVisitor::handleFunctionCall (clang::CallExpr *call)
                             // Try to get variable name from argument
                             std::string varName;
                             if (const auto *dre
-                                = llvm::dyn_cast<clang::DeclRefExpr> (
-                                    arg->IgnoreParenCasts ()))
+                                = llvm::dyn_cast<clang::DeclRefExpr> (arg->IgnoreParenImpCasts ()))
                                 {
                                     if (const auto *vd
                                         = llvm::dyn_cast<clang::VarDecl> (

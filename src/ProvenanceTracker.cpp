@@ -6,6 +6,9 @@
  * Date       Pgm  Comment
  * 18 Jan 26  jpb  Creation.
  * 10 Mar 26  jpb  Added annotation
+ * 22 Mar 26  jpb  Add some C++20 refactoring. Fix some of the functions
+ *                 after running the clang formatter. (Purely stylistic.)
+ * 05 Apr 26  jpb  Add violations check for local variables. Fixed parse points code.
  *
  */
 #include "ProvenanceTracker.h"
@@ -98,7 +101,7 @@ void ProvenanceTracker::analyzeParameterModifications (FunctionSummary &summary)
 
     for (auto i = 0u; i < summary.params.size (); ++i)
         {
-            if (currentModifiedParams_.count (i))
+            if (currentModifiedParams_.contains (i))
                 {
                     summary.params[i].modStatus = ParamModStatus::MODIFIED;
                 }
@@ -279,7 +282,7 @@ void ProvenanceTracker::checkCallArguments (const clang::CallExpr *call)
             "sprintf", "snprintf", "sscanf",  "fgets",   "fread",
             "gets",    "read",     "recv",    "recvfrom" };
 
-    if (modifyingFuncs.count (calleeName) && call->getNumArgs () > 0)
+    if (modifyingFuncs.contains (calleeName) && call->getNumArgs () > 0)
         {
             unsigned paramIdx;
             if (isExprFromParam (call->getArg (0)->IgnoreParenImpCasts (),
@@ -343,8 +346,7 @@ CallSiteBinding ProvenanceTracker::analyzeArgumentSource (const clang::Expr *arg
         {
             binding.fromCallerParam = true;
             binding.callerParamIndex = paramIdx;
-            binding.isDirectPassThrough
-                = (currentModifiedParams_.count (paramIdx) == 0);
+            binding.isDirectPassThrough = (currentModifiedParams_.contains (paramIdx));
             if (paramIdx < summary.params.size ())
                 {
                     binding.sourceName = summary.params[paramIdx].name;
@@ -417,155 +419,27 @@ bool ProvenanceTracker::isDirectParamRef (const clang::Expr *expr,
     return false;
 }
 
-std::set<ParsePoint> ProvenanceTracker::computeMinimalParsePoints (
-    const std::vector<FunctionSummary> &summaries)
+// We now check both summaries and violations for parse points.
+std::set<ParsePoint> ProvenanceTracker::computeMinimalParsePoints (std::vector<FunctionSummary> &summaries,
+    std::span<const TaintViolation>  violations)
 {
-
-    std::set<ParsePoint> parsePoints;
     llvm::errs () << "\n[Provenance] Computing minimal parse points...\n";
 
-    for (const FunctionSummary &summary : summaries)
-        {
-            for (const CallSiteRecord &cs : summary.callSites)
-                {
-                    auto calleeSummary = funcDb_.lookup (cs.calleeName);
-                    if (!calleeSummary)
-                        continue;
+    InterproceduralPropagator prop (funcDb_, summaries);
+    std::set<ParsePoint> parsePoints = prop.propagateAndComputeParsePoints (violations);
 
-                    for (unsigned i = 0; i < cs.bindings.size (); ++i)
-                        {
-                            const CallSiteBinding &binding = cs.bindings[i];
+    llvm::errs () << std::format ("[Provenance] Found {} parse point(s)\n", parsePoints.size());
 
-                            TaintLayer requiredLevel = TaintLayer::RAW;
-                            if (calleeSummary->isTaintSink)
-                                {
-                                    // Look for a per-parameter requirement first.
-                                    // If the param list has an entry for this
-                                    // argument position, use its requiredLayer.
-                                    // Only fall back to the global sinkRequirement
-                                    // when no specific entry exists for this param.
-                                    bool foundParam = false;
-                                    for (const auto &sp : calleeSummary->params)
-                                        {
-                                            if (sp.index == i)
-                                                {
-                                                    requiredLevel = sp.requiredLayer;
-                                                    foundParam = true;
-                                                    break;
-                                                }
-                                        }
-                                    if (!foundParam)
-                                        {
-                                            // No entry for this param index:
-                                            // do NOT apply the global sink
-                                            // requirement — only params explicitly
-                                            // listed as sensitive are flagged.
-                                            requiredLevel = TaintLayer::RAW;
-                                        }
-                                }
-                            else if (i < calleeSummary->params.size ())
-                                {
-                                    requiredLevel = calleeSummary->params[i]
-                                                        .requiredLayer;
-                                }
-
-                            if (requiredLevel <= TaintLayer::RAW)
-                                continue;
-
-                            if (binding.fromCallerParam
-                                && !binding.isDirectPassThrough)
-                                {
-                                    ParsePoint pp;
-                                    pp.functionName = summary.name;
-                                    pp.paramIndex = binding.callerParamIndex;
-                                    pp.paramName = binding.sourceName;
-                                    pp.currentLevel = TaintLayer::RAW;
-                                    pp.requiredLevel = requiredLevel;
-                                    pp.reason = "Modified before passing to "
-                                                + cs.calleeName;
-                                    pp.location = cs.location;
-
-                                    // Check for stratum:suppress annotation
-                                    auto suppIt = summary.suppressedParams.find (
-                                        binding.callerParamIndex);
-                                    if (suppIt != summary.suppressedParams.end ())
-                                        {
-                                            pp.suppressed     = true;
-                                            pp.suppressReason = suppIt->second;
-                                        }
-
-                                    parsePoints.insert (pp);
-                                }
-                        }
-                }
-
-            for (unsigned paramIdx : summary.paramsFlowToSink)
-                {
-                    if (summary.isModified (paramIdx))
-                        {
-                            ParsePoint pp;
-                            pp.functionName = summary.name;
-                            pp.paramIndex = paramIdx;
-                            if (paramIdx < summary.params.size ())
-                                pp.paramName = summary.params[paramIdx].name;
-                            pp.currentLevel = TaintLayer::RAW;
-                            pp.requiredLevel = summary.paramSinkRequirement;
-                            pp.reason = "Modified parameter flows to sink";
-
-                            // Find the location of the sink call site that
-                            // triggered this parse point, so the output has
-                            // a useful file/line rather than <unknown>/0.
-                            for (const auto &cs : summary.callSites)
-                                {
-                                    auto calleeSummary
-                                        = funcDb_.lookup (cs.calleeName);
-                                    if (calleeSummary
-                                        && calleeSummary->isTaintSink)
-                                        {
-                                            // Check that this call site
-                                            // involves our param
-                                            for (const auto &b : cs.bindings)
-                                                {
-                                                    if (b.fromCallerParam
-                                                        && b.callerParamIndex
-                                                               == paramIdx)
-                                                        {
-                                                            pp.location
-                                                                = cs.location;
-                                                            break;
-                                                        }
-                                                }
-                                        }
-                                    if (!pp.location.empty ())
-                                        break;
-                                }
-
-                            // Check for stratum:suppress annotation
-                            auto suppIt = summary.suppressedParams.find (paramIdx);
-                            if (suppIt != summary.suppressedParams.end ())
-                                {
-                                    pp.suppressed     = true;
-                                    pp.suppressReason = suppIt->second;
-                                }
-
-                            parsePoints.insert (pp);
-                        }
-                }
-        }
-
-    llvm::errs () << "[Provenance] Found " << parsePoints.size () << " parse point(s)\n";
     return parsePoints;
 }
 
-bool
-ProvenanceTracker::isPassThrough (const FunctionSummary &summary,
+bool ProvenanceTracker::isPassThrough (const FunctionSummary &summary,
                                   unsigned paramIdx)
 {
     return summary.isPassThrough (paramIdx);
 }
 
-void
-ProvenanceTracker::dumpSummary (const FunctionSummary &summary)
+void ProvenanceTracker::dumpSummary (const FunctionSummary &summary)
 {
     llvm::errs () << "\nFunction: " << summary.name << "\n  Parameters:\n";
     for (const auto &param : summary.params)
@@ -612,8 +486,8 @@ ProvenanceTracker::dumpSummary (const FunctionSummary &summary)
         }
 }
 
-std::string
-ProvenanceTracker::getLocation (clang::SourceLocation loc)
+// Return the current location as a human-readable string.
+std::string ProvenanceTracker::getLocation (clang::SourceLocation loc)
 {
     if (!currentContext_)
         return "<unknown>";
@@ -621,13 +495,11 @@ ProvenanceTracker::getLocation (clang::SourceLocation loc)
     clang::PresumedLoc ploc = sm.getPresumedLoc (loc);
     if (ploc.isInvalid ())
         return "<invalid>";
-    return std::string (ploc.getFilename ()) + ":"
-           + std::to_string (ploc.getLine ()) + ":"
-           + std::to_string (ploc.getColumn ());
+    return std::format("{}:{}:{}", ploc.getFilename(),
+                   ploc.getLine(), ploc.getColumn());
 }
 
-std::string
-ProvenanceTracker::getExprAsString (const clang::Expr *expr)
+std::string ProvenanceTracker::getExprAsString (const clang::Expr *expr)
 {
     if (!expr || !currentContext_)
         return "<null>";
@@ -637,8 +509,7 @@ ProvenanceTracker::getExprAsString (const clang::Expr *expr)
         return "<invalid>";
     return clang::Lexer::getSourceText (
                clang::CharSourceRange::getTokenRange (range), sm,
-               currentContext_->getLangOpts ())
-        .str ();
+               currentContext_->getLangOpts ()).str ();
 }
 
 //
@@ -694,7 +565,7 @@ InterproceduralPropagator::buildSummaryMap ()
 }
 
 std::set<ParsePoint>
-InterproceduralPropagator::propagateAndComputeParsePoints ()
+InterproceduralPropagator::propagateAndComputeParsePoints (std::span<const TaintViolation> violations)
 {
     std::set<ParsePoint> parsePoints;
     initializeLevels ();
@@ -730,6 +601,69 @@ InterproceduralPropagator::propagateAndComputeParsePoints ()
                                         = summary.paramSinkRequirement;
                                     pp.reason = "Parameter flows to sink and "
                                                 "is modified";
+                                    parsePoints.insert (pp);
+                                }
+                        }
+                }
+        }
+    // Third path: locals derived from taint-source return values.
+    // Covers e.g. char *data = receive_packet(socket); printf(data);
+    // where data is a local (fromCallerParam == false) so neither
+    // existing path above fires.
+    auto alreadyCovered = [&] (const std::string &func, unsigned idx) -> bool
+    {
+        ParsePoint probe;
+        probe.functionName = func;
+        probe.paramIndex   = idx;
+        return parsePoints.count (probe) > 0;
+    };
+
+    for (const auto &v : violations)
+        {
+            for (const auto &summary : summaries_)
+                {
+                    for (const auto &cs : summary.callSites)
+                        {
+                            if (cs.location != v.location)
+                                continue;
+
+                            auto calleeSummary = funcDb_.lookup (cs.calleeName);
+                            if (!calleeSummary || !calleeSummary->isTaintSink)
+                                continue;
+
+                            for (const auto &binding : cs.bindings)
+                                {
+                                    if (binding.fromCallerParam)
+                                        continue;  // handled by existing paths
+
+                                    if (binding.sourceName != v.variable)
+                                        continue;
+
+                                    if (alreadyCovered (summary.name,
+                                                        binding.argIndex))
+                                        continue;
+
+                                    ParsePoint pp;
+                                    pp.functionName  = summary.name;
+                                    pp.paramIndex    = 1000 + binding.argIndex;
+                                    pp.paramName     = binding.sourceName;
+                                    pp.currentLevel  = v.actualLayer;
+                                    pp.requiredLevel = v.requiredLayer;
+                                    pp.location      = v.location;
+                                    pp.reason        = "Local variable '"
+                                                       + binding.sourceName
+                                                       + "' derived from taint"
+                                                         " source flows to sink '"
+                                                       + cs.calleeName + "'";
+
+                                    auto suppIt = summary.suppressedParams.find (
+                                        binding.argIndex);
+                                    if (suppIt != summary.suppressedParams.end ())
+                                        {
+                                            pp.suppressed     = true;
+                                            pp.suppressReason = suppIt->second;
+                                        }
+
                                     parsePoints.insert (pp);
                                 }
                         }

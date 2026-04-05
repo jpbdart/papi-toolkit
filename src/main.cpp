@@ -10,6 +10,8 @@
  * 04 Mar 26  jpb  Removed unused older cmd line options.
  * 06 Mar 26  jpb  Finished refactoring. Added DEBUG around some output.
  * 07 Mar 26  jpb  Fixed versioning. Sorted out which files to allow to output.
+ * 22 Mar 26  jpb  More updates to C++20.
+ * 05 Apr 26  jpb  Change in call to calculate parse points.
  *
  */
 #include "ProvenanceTracker.h"
@@ -305,17 +307,15 @@ runTool (CompilationDatabase &compDb,
     ProvenanceTaintActionFactory factory (ctx);
     int r = Tool.run (&factory);
 #ifdef DEBUG
-    llvm::errs () << "Tool result: " << r << "\n";
-    llvm::errs () << "Summaries collected: " << ctx.summaries.size () << "\n";
-    llvm::errs () << "Violations collected: " << ctx.violations.size () << "\n";
+    llvm::errs () << std::format("Tool result: {}\nSummaries collected: {}\nViolations collected: {}\n",
+        r, ctx.summaries.size(), ctx.violations.size());
 #endif
     return r;
 }
 
 // Taps into the LLVM version stream to display our version.
 void printVersion(llvm::raw_ostream &OS) {
-    OS << "taint-analyzer " << VERSION_STRING
-       << " (LLVM " << LLVM_VERSION_STRING << ")\n";
+    OS << std::format("taint-analyzer {} (LLVM {})\n", VERSION_STRING, LLVM_VERSION_STRING);
 }
 
 // Main line entry point
@@ -384,15 +384,11 @@ int main (int argc, const char **argv)
             if (customCompDb)
                 {
                     compDb = customCompDb.get ();
-                    llvm::errs ()
-                        << "Using compile_commands.json from: " << compDbPath
-                        << "\n";
+                    llvm::errs () << "Using compile_commands.json from: " << compDbPath << "\n";
                 }
             else if (!errMsg.empty ())
                 {
-                    llvm::errs () << "Warning: Found compile_commands.json but "
-                                     "failed to load: "
-                                  << errMsg << "\n";
+                    llvm::errs () << "Warning: Found compile_commands.json but failed to load: " << errMsg << "\n";
                 }
         }
 
@@ -415,19 +411,16 @@ int main (int argc, const char **argv)
 
             result = runTool (*compDb, sourceFiles, ctx);
             if (result)
-                llvm::errs () << "Error " << result
-                              << " running FrontEndAction in ClangTool\n";
+                llvm::errs () << std::format("Error {} running FrontEndAction in ClangTool\n", result);
 
-            llvm::errs () << "\n=== Pass 1 complete: " << ctx.summaries.size ()
-                          << " function summaries collected ===\n\n";
+            llvm::errs () << std::format("\n=== Pass 1 complete: {} function summaries collected ===\n\n", ctx.summaries.size());
 
             // Clear violations from pass 1 - re-detected in pass 2 with full
             // cross-file knowledge; keep the summaries.
             ctx.violations.clear ();
 
             // PASS 2: Re-analyze with full function knowledge
-            llvm::errs () << "=== Pass 2: Full analysis with cross-file "
-                             "knowledge ===\n\n";
+            llvm::errs () << "=== Pass 2: Full analysis with cross-file knowledge ===\n\n";
 
             result = runTool (*compDb, sourceFiles, ctx);
 
@@ -450,15 +443,12 @@ int main (int argc, const char **argv)
             llvm::raw_fd_ostream reportFile (EmitReport, ec);
             if (ec)
                 {
-                    llvm::errs () << "\nError: Could not open report file '"
-                                  << EmitReport << "': " << ec.message ()
-                                  << "\n";
+                    llvm::errs () << "\nError: Could not open report file '" << EmitReport << "': " << ec.message () << "\n";
                 }
             else
                 {
                     printReport (&ctx, reportFile);
-                    llvm::errs () << "\nReport written to: " << EmitReport
-                                  << "\n";
+                    llvm::errs () << "\nReport written to: " << EmitReport << "\n";
                 }
         }
 
@@ -476,7 +466,7 @@ int main (int argc, const char **argv)
 
         // Compute minimal parse points
         std::set<taint::ParsePoint> parsePoints
-            = ctx.provenanceTracker->computeMinimalParsePoints (ctx.summaries);
+            = ctx.provenanceTracker->computeMinimalParsePoints (ctx.summaries, ctx.violations);
 
         // Emit RAW usage report to YAML if requested
         if (!EmitRaw.empty () && !ctx.rawUsages.empty ())

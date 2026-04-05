@@ -7,10 +7,11 @@
 # 18 Jan 26  jpb  Creation.
 # 02 Mar 26  jpb  Updated for papi-annotate.
 # 11 Mar 26  jpb  Added stratum notation
+# 05 Apr 26  jpb  Version to 0.3.6 for parse point changes.
 #
 #
 cmake_minimum_required(VERSION 3.28)
-project(TaintAnalyzer VERSION 0.3.5 LANGUAGES C CXX)
+project(TaintAnalyzer VERSION 0.3.6 LANGUAGES C CXX)
 
 # Make version available as a header
 configure_file(version.h.in version.h)
@@ -45,6 +46,12 @@ option(DEBUG_BUILD "Enable debug output" OFF)
 if(DEBUG_BUILD)
     add_compile_definitions(DEBUG)
 endif()
+
+# Enable this for profiling builds
+#set(CMAKE_BUILD_TYPE RelWithDebInfo)
+
+# Enable this for releases
+#set(CMAKE_BUILD_TYPE Release)
 
 # Get required LLVM components
 llvm_map_components_to_libnames(LLVM_LIBS

@@ -5,6 +5,8 @@
  *
  * Date       Pgm  Comment
  * 18 Jan 26  jpb  Creation.
+ * 22 Mar 26  jpb  More C++20 refactoring. Some is in anticipation of 
+ *                 future work.
  *
  */
 #ifndef TAINT_ANALYZER_H
@@ -26,6 +28,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <concepts>
 
 namespace taint
 {
@@ -301,6 +304,17 @@ rawUsageTypeToString (RawUsageType type)
         }
 }
 
+// Hash strings for unordered maps
+struct StringHash {
+    using is_transparent = void;
+    size_t operator()(std::string_view sv) const {
+        return std::hash<std::string_view>{}(sv);
+    }
+    size_t operator()(const std::string &s) const {
+        return std::hash<std::string_view>{}(s);
+    }
+};
+
 //
 // Variable Taint Tracker
 //
@@ -322,12 +336,14 @@ class TaintTracker
     bool equals (const TaintTracker &other) const;
 
   private:
-    std::map<std::string, TaintState> taintMap_;
+    std::unordered_map<std::string, TaintState,
+                   StringHash, std::equal_to<>> taintMap_; // unordered map is faster than std::map
 };
 
 //
 // Known Function Database
 //
+
 
 class FunctionDatabase
 {
@@ -348,7 +364,8 @@ class FunctionDatabase
     void loadBuiltins (); // Load standard library summaries
 
   private:
-    std::map<std::string, FunctionSummary> summaries_;
+    std::unordered_map<std::string, FunctionSummary,
+                   StringHash, std::equal_to<>> summaries_; // unordered map is faster than std::map
     std::set<std::string> sources_;
     std::set<std::string> sinks_;
     std::map<std::string, TaintLayer> parsers_; // parser name -> output layer
@@ -450,6 +467,22 @@ class TaintAnalysisVisitor
     analyzeBlock (const clang::CFGBlock *block,
                   std::map<const clang::CFGBlock *, TaintTracker> &blockStates);
 };
+
+// Constrain any enum type
+template<typename E>
+concept TaintEnum = std::is_enum_v<E>;
+
+template<TaintEnum E>
+const char* toString(E value) = delete; // catches unsupported enums at compile time
+
+template<> const char* toString(TaintLayer layer);
+template<> const char* toString(ParamModStatus status);
+template<> const char* toString(RawUsageType type);
+
+// Future work, make sure FunctionSummary can work over any range of summaries.
+template<typename R>
+concept SummaryRange = std::ranges::input_range<R> &&
+    std::same_as<std::ranges::range_value_t<R>, FunctionSummary>;
 
 } // namespace taint
 

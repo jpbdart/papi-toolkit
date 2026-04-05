@@ -1,0 +1,2 @@
+# Remove tools not ready or not used on main
+run_*.sh
