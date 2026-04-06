@@ -10,6 +10,8 @@
  * 10 Mar 26  jpb  Added annotation.
  * 22 Mar 26  jpb  Updating with more C++20 constructs.
  * 05 Apr 26  jpb  Coding mistake; change IgnoreParenCasts -> IgnoreParenImpCasts
+ * 06 Apr 26  jpb  Analyzed RHS might be a macro and ends up as CLEAN. Make sure 
+ *                 that is RAW instead. 
  *
  */
 #include "TaintAnalyzer.h"
@@ -956,15 +958,49 @@ TaintState TaintAnalysisVisitor::analyzeExpr (const clang::Expr *expr)
     if (llvm::isa<clang::UnaryExprOrTypeTraitExpr> (expr))
         return TaintState (TaintLayer::CLEAN, "sizeof/alignof");
 
-
     // Unary operator
     if (const auto *unOp = llvm::dyn_cast<clang::UnaryOperator> (expr))
         {
             return analyzeExpr (unOp->getSubExpr ());
         }
 
-    // Default: CLEAN (conservative for unknown expressions)
-    return TaintState (TaintLayer::CLEAN);
+    // GNU statement expression, e.g. ({ stmt; stmt; expr; }) — commonly
+    // produced by macro expansion (OpenSSL n2s, n2l, etc.).  Walk all
+    // sub-statements and return the taint of the last expression, which
+    // is the value of the compound statement.  If any sub-expression is
+    // RAW, the result is RAW.
+    if (const auto *stmtExpr = llvm::dyn_cast<clang::StmtExpr> (expr))
+        {
+            TaintLayer worst = TaintLayer::CLEAN;
+            const clang::CompoundStmt *body = stmtExpr->getSubStmt ();
+            for (const clang::Stmt *s : body->body ())
+                {
+                    if (const auto *subExpr
+                        = llvm::dyn_cast<clang::Expr> (s))
+                        {
+                            TaintState st = analyzeExpr (subExpr);
+                            worst = minLayer (worst, st.layer);
+                        }
+                    // Also handle assignments inside the compound stmt
+                    if (const auto *binOp
+                        = llvm::dyn_cast<clang::BinaryOperator> (s))
+                        {
+                            if (binOp->isAssignmentOp ())
+                                {
+                                    TaintState st
+                                        = analyzeExpr (binOp->getRHS ());
+                                    worst = minLayer (worst, st.layer);
+                                }
+                        }
+                }
+            return TaintState (worst, "macro expansion");
+        }
+
+    // Default: RAW — if we cannot determine the taint of an expression,
+    // assume it is untrusted.  This is the safe conservative choice:
+    // it may produce false positives but will not miss real flows.
+    // (sizeof/alignof returns CLEAN above before reaching this point.)
+    return TaintState (TaintLayer::RAW, "unknown expression");
 }
 
 bool TaintAnalysisVisitor::VisitBinaryOperator (clang::BinaryOperator *op)

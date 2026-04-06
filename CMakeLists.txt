@@ -8,10 +8,12 @@
 # 02 Mar 26  jpb  Updated for papi-annotate.
 # 11 Mar 26  jpb  Added stratum notation
 # 05 Apr 26  jpb  Version to 0.3.6 for parse point changes.
+# 06 Apr 26  jpb  Version to 0.3.7 for conservative handling of unknown RHS data
+#                 and adding file lists as program input.
 #
 #
 cmake_minimum_required(VERSION 3.28)
-project(TaintAnalyzer VERSION 0.3.6 LANGUAGES C CXX)
+project(TaintAnalyzer VERSION 0.3.7 LANGUAGES C CXX)
 
 # Make version available as a header
 configure_file(version.h.in version.h)

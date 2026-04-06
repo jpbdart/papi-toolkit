@@ -12,6 +12,7 @@
  * 07 Mar 26  jpb  Fixed versioning. Sorted out which files to allow to output.
  * 22 Mar 26  jpb  More updates to C++20.
  * 05 Apr 26  jpb  Change in call to calculate parse points.
+ * 06 Apr 26  jpb  Add response file. Make explicit path optional.
  *
  */
 #include "ProvenanceTracker.h"
@@ -26,6 +27,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include <map>
+#include <fstream>
 #include <unistd.h>
 #include "version.h"
 
@@ -60,6 +62,11 @@ static cl::opt<std::string> EmitSummary (
 static cl::opt<std::string> EmitReport (
     "emit-report",
     cl::desc ("Emit taint violations report to specified file (in addition to stderr)"),
+    cl::value_desc ("filename"), cl::cat (TaintCategory));
+
+static cl::opt<std::string> FileList (
+    "file-list",
+    cl::desc ("Read list of source files from specified file (one path per line)"),
     cl::value_desc ("filename"), cl::cat (TaintCategory));
 
 static cl::extrahelp CommonHelp (CommonOptionsParser::HelpMessage);
@@ -334,7 +341,7 @@ int main (int argc, const char **argv)
 
     // Parse command line options
     auto ExpectedParser = CommonOptionsParser::create (
-        argc, argv, TaintCategory, cl::OneOrMore,
+        argc, argv, TaintCategory, cl::ZeroOrMore,
         "PAPI Taint Analyzer - Track data flow and identify missing parsers");
 
     if (!ExpectedParser)
@@ -354,6 +361,32 @@ int main (int argc, const char **argv)
 
     // Track which source files we're analyzing (for saving summaries)
     std::vector<std::string> sourceFiles = OptionsParser.getSourcePathList ();
+
+    // If --file-list was specified, read additional source files from it
+    if (!FileList.empty ())
+        {
+            std::ifstream listFile (FileList);
+            if (!listFile.is_open ())
+                {
+                    llvm::errs () << std::format("Error: cannot open file list {}\n ", FileList.getValue());
+                    return 1;
+                }
+            std::string line;
+            while (std::getline (listFile, line))
+                {
+                    // Skip blank lines and comments
+                    if (line.empty () || line[0] == '#')
+                        continue;
+                    sourceFiles.push_back (line);
+                }
+            llvm::errs () << std::format("Loaded {} source file(s) from {}\n", sourceFiles.size (), FileList.getValue());
+        }
+
+    if (sourceFiles.empty ())
+    {
+        llvm::errs () << "Error: no source files specified. Provide files on the command line or use --file-list.\n";
+        return 1;
+    }
 
     // Try to find a compilation database
     std::string compDbPath;
