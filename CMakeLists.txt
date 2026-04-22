@@ -10,10 +10,12 @@
 # 05 Apr 26  jpb  Version to 0.3.6 for parse point changes.
 # 06 Apr 26  jpb  Version to 0.3.7 for conservative handling of unknown RHS data
 #                 and adding file lists as program input.
+# 22 Apr 26  jpb  Added preference to use LLVM 20 to fix some
+#                 incompatibility problems. Version to 0.3.8.
 #
 #
 cmake_minimum_required(VERSION 3.28)
-project(TaintAnalyzer VERSION 0.3.7 LANGUAGES C CXX)
+project(TaintAnalyzer VERSION 0.3.8 LANGUAGES C CXX)
 
 # Make version available as a header
 configure_file(version.h.in version.h)
@@ -21,6 +23,11 @@ configure_file(version.h.in version.h)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Prefer LLVM 20 if no explicit path is given
+if(NOT DEFINED LLVM_DIR)
+    set(CMAKE_PREFIX_PATH "/usr/lib/llvm-20" ${CMAKE_PREFIX_PATH})
+endif()
 
 # Find LLVM and Clang
 find_package(LLVM REQUIRED CONFIG)
