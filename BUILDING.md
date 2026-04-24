@@ -19,3 +19,9 @@ cmake ..
 `papi-annotate` and `taint-analyzer` are in the build directory.
 
 ## Installing
+
+```
+cd build
+sudo make install
+```
+
